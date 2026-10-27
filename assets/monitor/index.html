@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Agent Bridge · Message monitor</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="/" aria-label="Agent Bridge monitor home"><span class="brand-mark" aria-hidden="true">ab</span><span>Agent Bridge<small>Message monitor</small></span></a>
+    <span class="read-only">Read only</span>
+    <div class="connection" role="status" aria-live="polite"><span id="connection-dot" class="dot" aria-hidden="true"></span><span id="connection-label">Locked</span></div>
+    <button id="lock-button" class="quiet" type="button" hidden>Lock monitor</button>
+  </header>
+  <main>
+    <section id="login" class="login-card" aria-labelledby="login-heading">
+      <span class="eyebrow">Your local message traffic</span>
+      <h1 id="login-heading">A window into the conversation.</h1>
+      <p>Follow messages between your agents, inspect delivery, and trace replies. The monitor cannot send or change messages.</p>
+      <form id="login-form" method="post" action="/">
+        <label for="access-token">Monitor access token</label>
+        <div class="unlock-row"><input id="access-token" name="token" type="password" maxlength="256" autocomplete="off" autocapitalize="off" spellcheck="false" required aria-describedby="token-help"><button class="primary" type="submit">Unlock monitor <span aria-hidden="true">→</span></button></div>
+        <p id="token-help" class="help">Use the token shown by the local <code>agent-bridge monitor</code> command. It stays in this tab’s memory and is forgotten when you lock or reload.</p>
+        <p id="login-error" class="error" role="alert" hidden></p>
+      </form>
+    </section>
+    <section id="workspace" aria-label="Message activity" hidden>
+      <div class="page-heading"><div><span class="eyebrow">Local observability</span><h1>Message activity<span class="live-tag">Live</span></h1><p>Every hop, with the context to follow it.</p></div><div class="machine-card"><span class="caption">This machine</span><strong id="local-machine">Local bridge</strong><span id="last-updated" class="help">Waiting for messages</span></div></div>
+      <form id="filters" class="filters" aria-label="Filter messages">
+        <div class="filter-field"><label for="machine-filter">Machine</label><input id="machine-filter" name="machine" type="search" placeholder="Name or peer ID" maxlength="256" autocomplete="off"></div>
+        <div class="filter-field"><label for="agent-filter">Agent / session</label><input id="agent-filter" name="agent" type="search" placeholder="Name or session ID" maxlength="256" autocomplete="off"></div>
+        <div class="filter-field"><label for="state-filter">Delivery</label><select id="state-filter" name="state"><option value="">All states</option><option value="queued">Queued</option><option value="sending">Sending</option><option value="submitted">Submitted</option><option value="delivered">Delivered</option><option value="acknowledged">Acknowledged</option><option value="blocked">Blocked</option><option value="failed">Failed</option><option value="uncertain">Uncertain</option><option value="cancelled">Cancelled</option></select></div>
+        <div class="filter-field"><label for="since-filter">From</label><input id="since-filter" name="since" type="datetime-local"></div>
+        <div class="filter-field"><label for="until-filter">Until</label><input id="until-filter" name="until" type="datetime-local"></div>
+        <div class="filter-actions"><button class="primary" type="submit">Apply</button><button id="reset-filters" class="quiet" type="button">Reset</button></div>
+      </form>
+      <p id="activity-error" class="error notice" role="alert" hidden></p>
+      <div class="activity-layout">
+        <section class="feed-panel" aria-labelledby="feed-heading">
+          <div class="panel-heading"><h2 id="feed-heading">Traffic <span id="message-count" class="count">0</span></h2><button id="refresh-button" class="quiet" type="button">Refresh</button></div>
+          <div id="empty-state" class="empty-state" role="status"><span class="empty-symbol" aria-hidden="true">↔</span><h3>No messages yet</h3><p>Messages will appear here as agents communicate. The monitor does not start a conversation.</p></div>
+          <ol id="message-list" class="message-list" aria-label="Messages, newest first"></ol>
+          <div class="feed-footer"><span id="page-label" class="help">Newest first</span><button id="older-button" class="quiet" type="button" hidden>Load older messages <span aria-hidden="true">↓</span></button></div>
+        </section>
+        <aside id="detail-panel" class="detail-panel" aria-labelledby="detail-heading">
+          <div class="panel-heading"><h2 id="detail-heading">Message details</h2><button id="close-detail" class="quiet" type="button" hidden>Close</button></div>
+          <div id="detail-placeholder" class="detail-placeholder"><span aria-hidden="true">⌁</span><p>Select a message to inspect its contents, destination session, and reply chain.</p></div>
+          <div id="detail-content" hidden></div>
+        </aside>
+      </div>
+      <p class="privacy-note">Local, read-only, and served by Agent Bridge. Messages stay on this machine’s monitor connection. Access is not isolated from other programs running as your OS user.</p>
+    </section>
+  </main>
+  <noscript><p class="notice">Enable JavaScript to authenticate and view the local message monitor.</p></noscript>
+</body>
+</html>

@@ -1,0 +1,573 @@
+use agent_bridge::{
+    db::Db,
+    network::{
+        store::retryable,
+        trust::Permission,
+        wire::{Envelope, RemoteAgent, StatusEvent, WireResponse},
+    },
+    protocol::{Agent, Provider},
+};
+
+fn peer_id() -> String {
+    libp2p_identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id()
+        .to_string()
+}
+fn id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+fn user() -> RemoteAgent {
+    RemoteAgent {
+        name: "user".into(),
+        provider: Provider::Inbox,
+        session: "user".into(),
+    }
+}
+
+struct Pair {
+    _dir: tempfile::TempDir,
+    a: Db,
+    b: Db,
+    aid: String,
+    bid: String,
+    bpath: std::path::PathBuf,
+}
+impl Pair {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = Db::open(&dir.path().join("a.sqlite")).unwrap();
+        let bpath = dir.path().join("b.sqlite");
+        let mut b = Db::open(&bpath).unwrap();
+        let aid = peer_id();
+        let bid = peer_id();
+        a.pair_peer(&bid, &bid, Some("bob")).unwrap();
+        b.pair_peer(&aid, &aid, Some("alice")).unwrap();
+        for permission in [Permission::Discover, Permission::Send, Permission::Receive] {
+            a.grant_peer(&bid, "user", permission, true).unwrap();
+            b.grant_peer(&aid, "user", permission, true).unwrap();
+        }
+        a.replace_remote_agents(&bid, &[user()]).unwrap();
+        b.replace_remote_agents(&aid, &[user()]).unwrap();
+        Self {
+            _dir: dir,
+            a,
+            b,
+            aid,
+            bid,
+            bpath,
+        }
+    }
+    fn send(&self, body: &str) -> Envelope {
+        self.a
+            .send_remote(&self.aid, &id(), "user", "bob/user", body, &None)
+            .unwrap();
+        self.a
+            .pending_transfers(&self.bid, 100)
+            .unwrap()
+            .pop()
+            .unwrap()
+    }
+}
+
+#[test]
+fn lost_receipt_duplicate_and_restart_never_replay_native_submission() {
+    let mut p = Pair::new();
+    let env = p.send("hello");
+    p.a.mark_transfer_attempt(&env.id).unwrap();
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    assert_eq!(p.b.history(&None, 100).unwrap().len(), 1);
+    let (message, _) = p.b.claim().unwrap().unwrap();
+    assert_eq!(message.sender, format!("{}/user", p.aid));
+    p.b.finish(&message.id, "submitted", "native accepted")
+        .unwrap();
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    assert!(p.b.claim().unwrap().is_none());
+    p.b = Db::open(&p.bpath).unwrap();
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    assert!(p.b.claim().unwrap().is_none());
+    p.b.ack(&message.id, "user").unwrap();
+    let events = p.b.sync_events(&p.aid, 0).unwrap();
+    p.a.apply_events(&p.bid, &events).unwrap();
+    assert_eq!(p.a.get(&env.id).unwrap().state, "acknowledged");
+    assert_eq!(
+        p.a.transfer_info(&env.id).unwrap().unwrap()["state"],
+        "accepted"
+    );
+    assert!(p.a.pending_transfers(&p.bid, 10).unwrap().is_empty());
+    let cursor = p.a.sync_cursor(&p.bid).unwrap();
+    p.a.apply_events(&p.bid, &events).unwrap();
+    assert_eq!(p.a.sync_cursor(&p.bid).unwrap(), cursor);
+    assert!(p.a.retry(&env.id, true).is_err());
+}
+
+#[test]
+fn duplicate_acceptance_precedes_changed_permissions_rate_limits_and_session_lookup() {
+    let mut p = Pair::new();
+    let first = p.send("first");
+    p.b.accept_remote(&p.bid, &p.aid, &first).unwrap();
+    for n in 1..30 {
+        let mut env = first.clone();
+        env.id = id();
+        env.body = format!("message {n}");
+        p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    }
+    let mut next = first.clone();
+    next.id = id();
+    let error = p.b.accept_remote(&p.bid, &p.aid, &next).unwrap_err();
+    assert!(retryable(&error));
+    p.b.accept_remote(&p.bid, &p.aid, &first).unwrap();
+    p.b.grant_peer(&p.aid, "user", Permission::Receive, false)
+        .unwrap();
+    p.b.accept_remote(&p.bid, &p.aid, &first).unwrap();
+    assert!(!retryable(
+        &p.b.accept_remote(&p.bid, &p.aid, &next).unwrap_err()
+    ));
+    p.b.revoke_peer(&p.aid).unwrap();
+    assert!(p.b.accept_remote(&p.bid, &p.aid, &first).is_err());
+}
+
+#[test]
+fn envelope_identity_conflicts_and_unrelated_statuses_are_rejected() {
+    let p = Pair::new();
+    let env = p.send("first");
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    let mut conflict = env.clone();
+    conflict.body = "different".into();
+    assert!(p.b.accept_remote(&p.bid, &p.aid, &conflict).is_err());
+    let mut forged = env.clone();
+    forged.id = id();
+    forged.origin_peer = peer_id();
+    assert!(p.b.accept_remote(&p.bid, &p.aid, &forged).is_err());
+    let mut forwarded = env.clone();
+    forwarded.destination_peer = peer_id();
+    assert!(p.b.accept_remote(&p.bid, &p.aid, &forwarded).is_err());
+    assert!(
+        p.a.transfer_result(&p.bid, &env.id, &WireResponse::Accepted { id: id() })
+            .is_err()
+    );
+    let event = StatusEvent {
+        sequence: 1,
+        id: id(),
+        state: "submitted".into(),
+        detail: None,
+        updated: 1,
+    };
+    assert!(p.a.apply_events(&p.bid, &[event]).is_err());
+    assert_eq!(p.a.sync_cursor(&p.bid).unwrap(), 0);
+    assert_eq!(p.b.history(&None, 100).unwrap().len(), 1);
+}
+
+#[test]
+fn reply_uses_original_parent_session_and_correlates_local_ids() {
+    let p = Pair::new();
+    let env = p.send("question");
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    let local = p.b.history(&None, 1).unwrap().pop().unwrap();
+    // A reply remains possible from a pinned parent even without directory data.
+    p.b.replace_remote_agents(&p.aid, &[]).unwrap();
+    let reply_id = id();
+    p.b.send_remote(
+        &p.bid,
+        &reply_id,
+        "user",
+        "alice/user",
+        "answer",
+        &Some(local.id),
+    )
+    .unwrap();
+    let reply = p.b.pending_transfers(&p.aid, 1).unwrap().pop().unwrap();
+    assert_eq!(reply.hops, 1);
+    p.a.accept_remote(&p.aid, &p.bid, &reply).unwrap();
+    let answer = p.a.history(&None, 1).unwrap().pop().unwrap();
+    assert_eq!(answer.parent, Some(env.id));
+    assert_eq!(answer.body, "answer");
+    let mut forged = reply;
+    forged.id = id();
+    forged.hops = 0;
+    assert!(p.a.accept_remote(&p.aid, &p.bid, &forged).is_err());
+}
+
+#[test]
+fn revocation_blocks_queued_work_and_clears_cached_directory_even_while_paused() {
+    let mut p = Pair::new();
+    let env = p.send("pending");
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    p.b.pause(true).unwrap();
+    p.b.revoke_peer(&p.aid).unwrap();
+    assert_eq!(p.b.history(&None, 1).unwrap()[0].state, "blocked");
+    assert_eq!(p.b.remote_agents().unwrap(), serde_json::json!([]));
+    p.b.pause(false).unwrap();
+    assert!(p.b.claim().unwrap().is_none());
+    p.a.mark_transfer_attempt(&env.id).unwrap();
+    assert!(p.a.cancel(&env.id).is_err());
+    p.a.revoke_peer(&p.bid).unwrap();
+    assert_eq!(
+        p.a.transfer_info(&env.id).unwrap().unwrap()["state"],
+        "blocked"
+    );
+    assert!(p.a.cancel(&env.id).is_err());
+}
+
+#[test]
+fn immutable_outbound_survives_directory_replacement_and_idempotent_retries() {
+    let p = Pair::new();
+    let env = p.send("original");
+    p.a.replace_remote_agents(
+        &p.bid,
+        &[RemoteAgent {
+            session: "replacement".into(),
+            ..user()
+        }],
+    )
+    .unwrap();
+    p.a.send_remote(&p.aid, &env.id, "user", "bob/user", "original", &None)
+        .unwrap();
+    assert_eq!(p.a.pending_transfers(&p.bid, 1).unwrap()[0], env);
+    assert!(
+        p.a.send_remote(&p.aid, &env.id, "user", "bob/user", "conflict", &None)
+            .is_err()
+    );
+    let next = p.send("new");
+    assert_eq!(next.destination.session, "replacement");
+    assert!(p.b.accept_remote(&p.bid, &p.aid, &next).is_err());
+    assert!(p.a.cancel(&next.id).is_ok());
+}
+
+#[test]
+fn configuration_addresses_and_exports_are_validated_and_persisted() {
+    let mut p = Pair::new();
+    assert!(!p.a.network_config().unwrap().enabled);
+    assert!(
+        p.a.set_network_config(true, Some("/ip4/0.0.0.0/udp/0/quic-v1"))
+            .is_ok()
+    );
+    assert!(
+        p.a.set_peer_address("bob", "/ip4/0.0.0.0/udp/0/quic-v1")
+            .is_err()
+    );
+    p.a.set_peer_address("bob", "/ip4/127.0.0.1/udp/1234/quic-v1")
+        .unwrap();
+    assert_eq!(p.a.network_peers().unwrap().len(), 1);
+    assert!(
+        p.a.set_network_config(false, Some("/ip4/127.0.0.1/tcp/1234/ws"))
+            .is_err()
+    );
+    assert!(p.a.network_config().unwrap().enabled);
+    assert_eq!(p.a.export_agents(&p.bid).unwrap(), vec![user()]);
+    p.a.grant_peer(&p.bid, "user", Permission::Discover, false)
+        .unwrap();
+    assert!(p.a.export_agents(&p.bid).unwrap().is_empty());
+    assert!(
+        p.a.replace_remote_agents(&p.bid, &[user(), user()])
+            .is_err()
+    );
+    assert!(
+        p.a.replace_remote_agents(
+            &p.bid,
+            &[RemoteAgent {
+                name: "bad/name".into(),
+                ..user()
+            }]
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn interrupted_native_delivery_is_uncertain_and_unicode_details_are_bounded() {
+    let mut p = Pair::new();
+    let env = p.send("first");
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    let (message, _) = p.b.claim().unwrap().unwrap();
+    p.b = Db::open(&p.bpath).unwrap();
+    assert_eq!(p.b.get(&message.id).unwrap().state, "uncertain");
+    assert!(p.b.claim().unwrap().is_none());
+    p.b.retry(&message.id, true).unwrap();
+    let (message, _) = p.b.claim().unwrap().unwrap();
+    p.b.finish(&message.id, "failed", &"🦀".repeat(1000))
+        .unwrap();
+    let events = p.b.sync_events(&p.aid, 0).unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|e| e.detail.as_ref().is_none_or(|s| s.len() <= 2000))
+    );
+    p.a.apply_events(&p.bid, &events).unwrap();
+    assert_eq!(p.a.get(&env.id).unwrap().state, "failed");
+}
+
+#[test]
+fn destination_replacement_never_redirects_an_accepted_or_pending_message() {
+    let mut p = Pair::new();
+    p.b.register(
+        &Agent {
+            name: "sink".into(),
+            provider: Provider::Inbox,
+            session: "original".into(),
+            endpoint: String::new(),
+            enabled: true,
+        },
+        false,
+    )
+    .unwrap();
+    p.b.grant_peer(&p.aid, "sink", Permission::Receive, true)
+        .unwrap();
+    let mut env = p.send("pinned");
+    env.destination = RemoteAgent {
+        name: "sink".into(),
+        provider: Provider::Inbox,
+        session: "original".into(),
+    };
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    p.b.register(
+        &Agent {
+            name: "sink".into(),
+            provider: Provider::Inbox,
+            session: "replacement".into(),
+            endpoint: String::new(),
+            enabled: true,
+        },
+        true,
+    )
+    .unwrap();
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    assert!(p.b.claim().unwrap().is_none());
+    let mut new = env;
+    new.id = id();
+    assert!(p.b.accept_remote(&p.bid, &p.aid, &new).is_err());
+}
+
+#[test]
+fn serialized_status_pages_fit_even_when_details_expand_as_json_controls() {
+    let mut p = Pair::new();
+    let env = p.send("bounded status");
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    for _ in 0..100 {
+        let (message, _) = p.b.claim().unwrap().unwrap();
+        p.b.finish(&message.id, "failed", &"\0".repeat(2000))
+            .unwrap();
+        p.b.retry(&message.id, false).unwrap();
+    }
+    let first = p.b.sync_events(&p.aid, 0).unwrap();
+    assert!(first.len() < 100);
+    assert!(!first.is_empty());
+    let mut pages = 0;
+    loop {
+        let page =
+            p.b.sync_events(&p.aid, p.a.sync_cursor(&p.bid).unwrap())
+                .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        let encoded = serde_json::to_vec(&WireResponse::Status {
+            events: page.clone(),
+        })
+        .unwrap();
+        assert!(encoded.len() <= agent_bridge::protocol::MAX_FRAME);
+        p.a.apply_events(&p.bid, &page).unwrap();
+        pages += 1;
+    }
+    assert!(pages > 1);
+    assert_eq!(p.a.get(&env.id).unwrap().state, "queued");
+}
+
+#[test]
+fn late_rejection_does_not_overwrite_an_existing_durable_acceptance() {
+    let p = Pair::new();
+    let env = p.send("accepted");
+    p.a.mark_transfer_attempt(&env.id).unwrap();
+    p.a.transfer_result(
+        &p.bid,
+        &env.id,
+        &WireResponse::Accepted { id: env.id.clone() },
+    )
+    .unwrap();
+    p.a.transfer_result(
+        &p.bid,
+        &env.id,
+        &WireResponse::Rejected {
+            reason: "late reply".into(),
+            retryable: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        p.a.transfer_info(&env.id).unwrap().unwrap()["state"],
+        "accepted"
+    );
+    assert_eq!(p.a.get(&env.id).unwrap().state, "queued");
+}
+
+#[test]
+fn blocked_inbound_can_be_explicitly_retried_after_trust_is_restored() {
+    let mut p = Pair::new();
+    let env = p.send("blocked");
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    let local = p.b.history(&None, 1).unwrap().pop().unwrap();
+    p.b.revoke_peer(&p.aid).unwrap();
+    assert_eq!(p.b.get(&local.id).unwrap().state, "blocked");
+    p.b.pair_peer(&p.aid, &p.aid, None).unwrap();
+    p.b.grant_peer(&p.aid, "user", Permission::Receive, true)
+        .unwrap();
+    p.b.retry(&local.id, false).unwrap();
+    assert_eq!(p.b.claim().unwrap().unwrap().0.id, local.id);
+    assert!(p.b.claim().unwrap().is_none());
+}
+
+#[test]
+fn inbound_retry_cannot_redirect_to_another_provider_with_the_same_session_id() {
+    let mut p = Pair::new();
+    let session = id();
+    p.b.register(
+        &Agent {
+            name: "sink".into(),
+            provider: Provider::Inbox,
+            session: session.clone(),
+            endpoint: String::new(),
+            enabled: true,
+        },
+        false,
+    )
+    .unwrap();
+    p.b.grant_peer(&p.aid, "sink", Permission::Receive, true)
+        .unwrap();
+    let mut env = p.send("provider pinned");
+    env.destination = RemoteAgent {
+        name: "sink".into(),
+        provider: Provider::Inbox,
+        session: session.clone(),
+    };
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    let local = p.b.history(&None, 1).unwrap().pop().unwrap();
+    p.b.register(
+        &Agent {
+            name: "sink".into(),
+            provider: Provider::Codex,
+            session,
+            endpoint: String::new(),
+            enabled: true,
+        },
+        true,
+    )
+    .unwrap();
+    p.b.retry(&local.id, false).unwrap();
+    assert!(p.b.claim().unwrap().is_none());
+    assert_eq!(p.b.get(&local.id).unwrap().state, "blocked");
+}
+
+#[test]
+fn retained_history_accounts_utf8_body_copies_and_survives_schema_nine_upgrade() {
+    let mut p = Pair::new();
+    let env = p.send("retained é🦀\0tail");
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    let conn = rusqlite::Connection::open(&p.bpath).unwrap();
+    let expected = (env.body.len() + serde_json::to_string(&env).unwrap().len()) as i64;
+    let usage: (i64, i64) = conn
+        .query_row(
+            "SELECT messages,bytes FROM inbound_usage WHERE peer_id=?",
+            [&p.aid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(usage, (1, expected));
+    conn.execute("UPDATE messages SET state='submitted' WHERE id IN (SELECT local_id FROM inbound_transfers)",[]).unwrap();
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT bytes FROM inbound_usage WHERE peer_id=?",
+            [&p.aid],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        expected
+    );
+    conn.execute_batch("DROP TRIGGER inbound_usage_insert; DROP TRIGGER inbound_usage_delete; DROP TABLE inbound_usage; PRAGMA user_version=9;").unwrap();
+    drop(conn);
+    p.b = Db::open(&p.bpath).unwrap();
+    let conn = rusqlite::Connection::open(&p.bpath).unwrap();
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT bytes FROM inbound_usage WHERE peer_id=?",
+            [&p.aid],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        expected
+    );
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT messages FROM inbound_usage WHERE peer_id=?",
+            [&p.aid],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn retained_history_quota_rejects_completed_message_growth_without_breaking_dedup() {
+    for boundary in ["peer-bytes", "peer-rows", "global-bytes", "global-rows"] {
+        let mut p = Pair::new();
+        let first = p.send("first");
+        p.b.accept_remote(&p.bid, &p.aid, &first).unwrap();
+        let next = p.send("more é🦀");
+        let cost = (next.body.len() + serde_json::to_string(&next).unwrap().len()) as i64;
+        let other = peer_id();
+        p.b.pair_peer(&other, &other, None).unwrap();
+        let conn = rusqlite::Connection::open(&p.bpath).unwrap();
+        conn.execute("UPDATE messages SET state='submitted' WHERE id IN (SELECT local_id FROM inbound_transfers)",[]).unwrap();
+        match boundary {
+            "peer-bytes" => {
+                conn.execute(
+                    "UPDATE inbound_usage SET bytes=? WHERE peer_id=?",
+                    rusqlite::params![64 * 1024 * 1024 - cost, &p.aid],
+                )
+                .unwrap();
+                p.b.accept_remote(&p.bid, &p.aid, &next).unwrap();
+            }
+            "peer-rows" => {
+                conn.execute(
+                    "UPDATE inbound_usage SET messages=8192 WHERE peer_id=?",
+                    [&p.aid],
+                )
+                .unwrap();
+            }
+            "global-bytes" => {
+                conn.execute(
+                    "INSERT INTO inbound_usage VALUES(?,1,?)",
+                    rusqlite::params![&other, 256 * 1024 * 1024 - cost],
+                )
+                .unwrap();
+            }
+            "global-rows" => {
+                conn.execute("INSERT INTO inbound_usage VALUES(?,32767,0)", [&other])
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let failed = p.send("another");
+        let before: i64 = conn
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        let error = p.b.accept_remote(&p.bid, &p.aid, &failed).unwrap_err();
+        assert!(
+            error.to_string().contains("history quota"),
+            "{boundary}: {error}"
+        );
+        assert!(retryable(&error));
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM messages", [], |r| r.get(0))
+                .unwrap(),
+            before
+        );
+        p.b.accept_remote(&p.bid, &p.aid, &first).unwrap();
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM messages", [], |r| r.get(0))
+                .unwrap(),
+            before
+        );
+    }
+}
