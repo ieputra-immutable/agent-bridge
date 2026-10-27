@@ -36,6 +36,13 @@ Open an existing Codex or Claude session to use native delivery. Claude registra
 hooks can be installed separately with `agent-bridge hooks install`; hook trust and
 native permissions remain your choices.
 
+## Agent tools
+
+The installed executable also provides `agent-bridge mcp`, a persistent local
+stdio server for structured agent tools. See [MCP setup](mcp.md) to register it with
+your agent application. Installation does not automatically edit client MCP
+configuration or change tool approval settings.
+
 ## Options and pinned builds
 
 Pass installer arguments after `sh -s --`:

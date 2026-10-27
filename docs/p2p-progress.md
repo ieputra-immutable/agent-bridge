@@ -41,7 +41,10 @@ revision is exposed in CI-built status metadata. See [installation](install.md).
 This remains dogfooding, not an official stable release.
 
 Native CI additionally exercises repeated threaded and separate-process identity
-initialization with both process-local and filesystem serialization. A minimal
+initialization with both process-local and filesystem serialization. Identity lock
+creation uses exclusive creation followed by plain open for an existing lock,
+avoiding the concurrent Darwin create-or-open path implicated in native CI failures.
+A minimal
 vendored relay fix prevents non-reservation connection closure from incorrectly
 reporting a live reservation as closed; retained upstream tests and a focused
 regression cover the event semantics. No relay wire protocol or trust policy is
@@ -54,3 +57,11 @@ ask its owner Yes/No after independently comparing the displayed code, and recei
 completion updates automatically. The notification path carries no arbitrary
 remote message text and grants neither trust nor session access by itself. Manual
 pairing remains available. See [owner-approved pairing](lan-pairing.md).
+
+## MCP agent tools
+
+The executable includes a persistent stdio MCP server using the official Rust
+SDK. Typed messaging, connection, pairing and session-sharing tools forward to the
+existing private broker without per-call CLI processes. Owner confirmation, trust
+and grant checks remain in place. Native adapters still deliver incoming events;
+MCP provides the structured command interface. See [MCP setup](mcp.md).

@@ -22,6 +22,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Expose structured agent tools over a persistent local MCP stdio connection.
+    Mcp,
     /// Run the background broker (launchd runs this command).
     Serve {
         #[arg(long)]
@@ -452,6 +454,7 @@ async fn main() -> Result<()> {
         None => service::default_state_dir()?,
     };
     let req = match cli.command {
+        Commands::Mcp => return agent_bridge::mcp::run(state_dir).await,
         Commands::Serve {
             codex_bin,
             no_discovery,

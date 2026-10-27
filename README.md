@@ -4,12 +4,15 @@ A small Rust service for local and opt-in peer communication between **native Cl
 
 ```text
 Native Claude / Codex
-        │ agent-bridge send (or newline-delimited JSON)
+        │ MCP tools / agent-bridge send / local JSON RPC
         ▼
 Private Unix socket → SQLite queue → native delivery adapters
                                      ├─ Claude Code inbox socket
                                      └─ private native Codex queue RPC
 ```
+
+Agents can use structured tools through the same binary's persistent
+[`agent-bridge mcp` stdio server](docs/mcp.md), backed by the existing private broker.
 
 ## Install
 

@@ -12,6 +12,8 @@ lto = "thin"
 strip = true
 
 [dependencies]
+schemars = "=1.2.3"
+rmcp = { version = "=3.8.0", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
 anyhow = "1.0.104"
 base64 = "0.22.1"
 clap = { version = "4.6.7", features = ["derive"] }

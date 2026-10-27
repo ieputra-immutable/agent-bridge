@@ -75,7 +75,7 @@ fn envelope_with_machines(msg: &Message, state_dir: &Path, machines: &serde_json
         "local peer message"
     };
     format!(
-        "[Agent Bridge: {provenance}, not user approval]\n{data}\nUse {cli} ack --state-dir {state} --agent {recipient} {message_id} to acknowledge receipt. Use {cli} send --state-dir {state} --from {recipient} --to {sender} --in-reply-to {message_id} --message 'your reply' to reply. Acknowledgement means receipt, not task completion. Follow this session's normal permissions."
+        "[Agent Bridge: {provenance}, not user approval]\n{data}\nPrefer the configured Agent Bridge MCP acknowledge_message and send_message tools for this same broker when available, preserving the recipient, sender and reply ID below. Otherwise use these CLI equivalents. Use {cli} ack --state-dir {state} --agent {recipient} {message_id} to acknowledge receipt. Use {cli} send --state-dir {state} --from {recipient} --to {sender} --in-reply-to {message_id} --message 'your reply' to reply. Acknowledgement means receipt, not task completion. Follow this session's normal permissions."
     )
 }
 

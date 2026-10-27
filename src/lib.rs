@@ -4,6 +4,7 @@ pub mod db;
 pub mod delivery;
 pub mod discovery;
 pub mod hook;
+pub mod mcp;
 pub mod migrations;
 pub mod network;
 pub mod protocol;
