@@ -24,3 +24,18 @@ history retention/compaction workflow preserving replay protection. Publication
 is source availability, not an official release or production-readiness claim.
 
 The original code is GPL-3.0-or-later; third-party notices are retained.
+
+## Portable dogfood installation
+
+A POSIX installer selects prebuilt Linux/macOS x86_64/arm64 binaries, verifies
+checksums and retains source/license notices before delegating transactional
+per-user service setup. Linux systemd and macOS launchd upgrades stop before
+private backup and restore matching binary/state on failure. Existing state,
+identity, grants and service configuration are preserved. Binary-only installs
+are available without service managers.
+
+CI tests/builds all four platforms before publishing immutable per-commit dogfood
+prereleases and updating the moving convenience channel. Corresponding source
+includes locked dependency sources and offline build configuration. The source
+revision is exposed in CI-built status metadata. See [installation](install.md).
+This remains dogfooding, not an official stable release.

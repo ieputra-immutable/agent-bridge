@@ -1,0 +1,136 @@
+name: Dogfood builds
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dogfood-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.98.0
+
+jobs:
+  build:
+    name: ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            asset: agent-bridge-linux-x86_64
+          - runner: ubuntu-22.04-arm
+            asset: agent-bridge-linux-aarch64
+          - runner: macos-15-intel
+            asset: agent-bridge-macos-x86_64
+          - runner: macos-14
+            asset: agent-bridge-macos-aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      AGENT_BRIDGE_BUILD_COMMIT: ${{ github.sha }}
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt --component clippy
+          rustup default "$RUST_VERSION"
+      - name: Validate source and installer
+        run: |
+          cargo fmt --check
+          cargo test --locked
+          cargo clippy --all-targets --locked -- -D warnings
+          sh -n install.sh
+          python3 tools/test_installer.py
+          python3 tools/test_packaging.py
+      - name: Build portable release executable
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          cargo build --release --locked
+          mkdir -p dist
+          cp target/release/agent-bridge "dist/$ASSET"
+          if [ "$(uname -s)" = Darwin ]; then
+            codesign --force --sign - "dist/$ASSET"
+          fi
+          "dist/$ASSET" --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish dogfood prerelease
+    needs: build
+    if: github.repository == 'jasadams/agent-bridge' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: agent-bridge-*
+          merge-multiple: true
+          path: dist
+      - name: Install pinned source packaging toolchain
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - name: Package corresponding source and dependency notices
+        run: python3 tools/package_dogfood.py --dist dist --commit "$GITHUB_SHA"
+      - name: Publish immutable build and dogfood convenience channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          build_tag="dogfood-$(printf '%s' "$GITHUB_SHA" | cut -c1-12)"
+          asset_dir=dist
+          if gh release view "$build_tag" >/dev/null 2>&1; then
+            if [ "$(gh release view "$build_tag" --json isDraft --jq .isDraft)" = true ]; then
+              gh release upload "$build_tag" dist/* --clobber
+              gh release edit "$build_tag" --draft=false --prerelease --latest=false
+            else
+              mkdir published
+              gh release download "$build_tag" --dir published
+              (cd published && sha256sum --check SHA256SUMS)
+              test "$(cat published/SOURCE_COMMIT)" = "$GITHUB_SHA"
+              asset_dir=published
+            fi
+          else
+            gh release create "$build_tag" --target "$GITHUB_SHA" --draft --prerelease --latest=false \
+              --title "Dogfood $(printf '%s' "$GITHUB_SHA" | cut -c1-12)" --notes-file dist/RELEASE_NOTES.md dist/*
+            gh release edit "$build_tag" --draft=false --prerelease --latest=false
+          fi
+          test "$(gh api "repos/$GH_REPO/commits/$build_tag" --jq .sha)" = "$GITHUB_SHA"
+          if [ "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" != "$GITHUB_SHA" ]; then
+            echo "Published immutable build; a newer main commit owns the dogfood convenience channel."
+            exit 0
+          fi
+          if gh api "repos/$GH_REPO/git/ref/tags/dogfood" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/dogfood" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/dogfood -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          if gh release view dogfood >/dev/null 2>&1; then
+            gh release edit dogfood --target "$GITHUB_SHA" --prerelease --latest=false --title 'Dogfood builds' --notes-file "$asset_dir/RELEASE_NOTES.md"
+            gh release upload dogfood "$asset_dir"/* --clobber
+          else
+            gh release create dogfood --target "$GITHUB_SHA" --prerelease --latest=false --title 'Dogfood builds' --notes-file "$asset_dir/RELEASE_NOTES.md" "$asset_dir"/*
+          fi

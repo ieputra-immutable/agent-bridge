@@ -13,16 +13,28 @@ Private Unix socket → SQLite queue → native delivery adapters
 
 ## Install
 
-Requires a current Rust toolchain and installed `codex` and `claude` commands. Developed with Rust 1.94.1, Codex CLI 0.163.0 and Claude Code 2.1.309. Install runs no model inference.
+Linux and macOS (Intel and Apple Silicon), no sudo or Rust toolchain required:
 
 ```sh
-cargo build --release --locked
-./target/release/agent-bridge service install
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/jasadams/agent-bridge/main/install.sh | sh
+```
+
+This installs the checked **dogfood prerelease** and starts a per-user service:
+systemd on Linux, launchd on macOS. Existing identity, history and grants are
+preserved; upgrades make a private backup before changing the running service.
+`~/.local/bin` must be on your PATH. See [installation options and rollback](docs/install.md)
+for supported versions, binary-only installs, immutable builds and source builds.
+
+```sh
 agent-bridge status
+agent-bridge monitor enable
+# Optional registration hooks:
 agent-bridge hooks install
 ```
 
-The installer places the single binary at `~/.local/bin/agent-bridge` and registers a per-user LaunchAgent, `local.agent-bridge`. launchd starts it at login and restarts it after failure. No root access is needed. `~/.local/bin` must be on your shell's PATH.
+The service makes no model API calls. Native sessions retain their normal approval
+and hook-trust settings. Networking and monitor access stay off on a fresh install
+until explicitly enabled.
 
 The hooks installer preserves existing hooks and settings, backs up existing configuration files, and adds registration handlers to `~/.claude/settings.json` and `~/.codex/hooks.json`. It changes no agent permissions or inbound messaging settings.
 
@@ -234,7 +246,7 @@ agent-bridge hooks uninstall
 agent-bridge service uninstall
 ```
 
-Uninstall leaves the binary, message database, and hook backups in place. `--state-dir` works on every command. The LaunchAgent uses explicit binary paths, so it does not depend on an interactive shell's environment.
+Uninstall leaves the binary, message database, and hook backups in place. `--state-dir` works on every command. The managed service uses explicit binary paths, so it does not depend on an interactive shell's environment.
 
 For sensitive message bodies, pipe stdin into `send` rather than passing `--message TEXT`, which your OS may expose in process listings. The native delivery adapter never passes bodies in process arguments. See [the security review](docs/security-review.md) for the three review scopes, fixes and remaining acceptance limits.
 
@@ -244,6 +256,9 @@ For sensitive message bodies, pipe stdin into `send` rather than passing `--mess
 cargo fmt --check
 cargo test --locked
 cargo clippy --all-targets --locked -- -D warnings
+sh -n install.sh
+python3 tools/test_installer.py
+python3 tools/test_packaging.py
 ```
 
 When changing the vendored mDNS dependency, also run its tests and checks separately; the root package checks do not cover dependency unit tests:
