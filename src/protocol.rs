@@ -93,6 +93,11 @@ pub enum Request {
     Pause {
         paused: bool,
     },
+    BoardRead,
+    BoardUpdate {
+        expected_revision: String,
+        edits: Vec<crate::board::Edit>,
+    },
     Status,
     MonitorEnable {
         port: u16,

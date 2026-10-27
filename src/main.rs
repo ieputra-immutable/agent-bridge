@@ -24,6 +24,12 @@ struct Cli {
 enum Commands {
     /// Expose structured agent tools over a persistent local MCP stdio connection.
     Mcp,
+    /// Watch the local shared Markdown board, or print its current Markdown.
+    Board {
+        /// Print Markdown once without opening the terminal UI.
+        #[arg(long)]
+        raw: bool,
+    },
     /// Run the background broker (launchd runs this command).
     Serve {
         #[arg(long)]
@@ -455,6 +461,16 @@ async fn main() -> Result<()> {
     };
     let req = match cli.command {
         Commands::Mcp => return agent_bridge::mcp::run(state_dir).await,
+        Commands::Board { raw } => {
+            if raw {
+                let value = broker::rpc(&state_dir, &Request::BoardRead).await?;
+                let board: agent_bridge::board::Snapshot = serde_json::from_value(value)?;
+                use std::io::Write;
+                std::io::stdout().write_all(board.markdown.as_bytes())?;
+                return Ok(());
+            }
+            return agent_bridge::board_tui::run(state_dir).await;
+        }
         Commands::Serve {
             codex_bin,
             no_discovery,

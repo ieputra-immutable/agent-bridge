@@ -570,3 +570,156 @@ async fn two_mcp_clients_pair_real_brokers_only_after_both_owners_approve_then_s
     a_mcp.close().await;
     b_mcp.close().await;
 }
+
+#[tokio::test]
+async fn shared_markdown_board_updates_atomically_and_preserves_concurrent_agent_work() {
+    let root = root();
+    let state = root.path().join("state");
+    let _running = Running::start(&state);
+    let mut first = Mcp::start(&state);
+    let mut second = Mcp::start(&state);
+    first.initialize().await;
+    second.initialize().await;
+
+    let empty = first.call("read_board", json!({})).await;
+    let empty = &structured(&empty)["result"];
+    assert_eq!(empty["markdown"], "");
+    assert_eq!(empty["exists"], false);
+    let markdown = "# Anything the user chooses\n\n| Writer | Work | Needs owner |\n| --- | --- | --- |\n| A | alpha | no |\n| B | beta | no |\n";
+    let initial = first
+        .call(
+            "update_board",
+            json!({
+                "expected_revision":empty["revision"],
+                "edits":[{"op":"set","markdown":markdown}]
+            }),
+        )
+        .await;
+    assert!(!failed(&initial), "{initial}");
+    let revision = structured(&initial)["result"]["board"]["revision"].clone();
+    let a = first.call("update_board", json!({
+        "expected_revision":revision,
+        "edits":[{"op":"replace","old":"| A | alpha | no |","new":"| A | complete ✓ | no |"}]
+    })).await;
+    assert!(!failed(&a), "{a}");
+
+    // Both agents read the same revision. The second edit cannot overwrite the
+    // first one's change; the conflict supplies a fresh snapshot for its retry.
+    let b = second
+        .call(
+            "update_board",
+            json!({
+                "expected_revision":revision,
+                "edits":[{"op":"replace","old":"| B | beta | no |","new":"| B | reviewing | yes |"}]
+            }),
+        )
+        .await;
+    assert!(failed(&b), "{b}");
+    let conflict = &b["result"]["structuredContent"]["result"];
+    assert_eq!(conflict["applied"], false);
+    assert_eq!(conflict["conflict"], true);
+    assert!(
+        conflict["board"]["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("complete ✓")
+    );
+    let merged = second
+        .call(
+            "update_board",
+            json!({
+                "expected_revision":conflict["board"]["revision"],
+                "edits":[{"op":"replace","old":"| B | beta | no |","new":"| B | reviewing | yes |"}]
+            }),
+        )
+        .await;
+    assert!(!failed(&merged), "{merged}");
+    let snapshot = &structured(&merged)["result"]["board"];
+    let contents = snapshot["markdown"].as_str().unwrap();
+    assert!(contents.contains("complete ✓"));
+    assert!(contents.contains("reviewing | yes"));
+    assert_eq!(
+        std::fs::read_to_string(snapshot["path"].as_str().unwrap()).unwrap(),
+        contents
+    );
+
+    let invalid_batch = first
+        .call(
+            "update_board",
+            json!({
+                "expected_revision":snapshot["revision"],
+                "edits":[{"op":"append","text":"must not appear"},
+                    {"op":"replace","old":"missing anchor","new":"anything"}]
+            }),
+        )
+        .await;
+    assert!(failed(&invalid_batch));
+    let unchanged = first.call("read_board", json!({})).await;
+    assert_eq!(
+        structured(&unchanged)["result"]["revision"],
+        snapshot["revision"]
+    );
+    assert_eq!(structured(&unchanged)["result"]["markdown"], contents);
+    assert!(failed(
+        &first
+            .call(
+                "update_board",
+                json!({
+                    "expected_revision":snapshot["revision"],"edits":[],"path":"/unrelated/file"
+                })
+            )
+            .await
+    ));
+
+    let raw = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-bridge"))
+        .arg("--state-dir")
+        .arg(&state)
+        .args(["board", "--raw"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        raw.status.success(),
+        "{}",
+        String::from_utf8_lossy(&raw.stderr)
+    );
+    assert_eq!(String::from_utf8(raw.stdout).unwrap(), contents);
+    // Race two independent MCP processes against one revision. Exactly one
+    // write commits, then the losing caller can merge against the fresh board.
+    let (left, right) = tokio::join!(
+        first.call(
+            "update_board",
+            json!({"expected_revision":snapshot["revision"],
+            "edits":[{"op":"append","text":"\nleft writer\n"}]})
+        ),
+        second.call(
+            "update_board",
+            json!({"expected_revision":snapshot["revision"],
+            "edits":[{"op":"append","text":"\nright writer\n"}]})
+        )
+    );
+    assert_ne!(failed(&left), failed(&right));
+    let (conflict, missing) = if failed(&left) {
+        (&left, "\nleft writer\n")
+    } else {
+        (&right, "\nright writer\n")
+    };
+    let current = &conflict["result"]["structuredContent"]["result"]["board"];
+    let retry = first
+        .call(
+            "update_board",
+            json!({"expected_revision":current["revision"],
+        "edits":[{"op":"append","text":missing}]}),
+        )
+        .await;
+    assert!(!failed(&retry), "{retry}");
+    let merged = structured(&retry)["result"]["board"]["markdown"]
+        .as_str()
+        .unwrap();
+    assert!(merged.contains("left writer"));
+    assert!(merged.contains("right writer"));
+    assert!(merged.contains("complete ✓"));
+    assert!(merged.contains("reviewing | yes"));
+    first.close().await;
+    second.close().await;
+}

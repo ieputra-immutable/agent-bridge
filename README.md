@@ -14,6 +14,10 @@ Private Unix socket → SQLite queue → native delivery adapters
 Agents can use structured tools through the same binary's persistent
 [`agent-bridge mcp` stdio server](docs/mcp.md), backed by the existing private broker.
 
+Use [`agent-bridge board`](docs/board.md) for a live terminal view of a shared
+Markdown document. Agents update it incrementally through MCP; the content and
+layout are chosen by the user, with revision checks protecting concurrent edits.
+
 ## Install
 
 Linux and macOS (Intel and Apple Silicon), no sudo or Rust toolchain required:

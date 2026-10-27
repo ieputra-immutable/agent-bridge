@@ -65,3 +65,10 @@ SDK. Typed messaging, connection, pairing and session-sharing tools forward to t
 existing private broker without per-call CLI processes. Owner confirmation, trust
 and grant checks remain in place. Native adapters still deliver incoming events;
 MCP provides the structured command interface. See [MCP setup](mcp.md).
+
+## Local shared Markdown board
+
+One content-agnostic Markdown document is shared through local broker RPC and
+revision-checked MCP edits. A read-only terminal viewer renders it live. Storage,
+editing and rendering are separated for later board/source selection; this
+version does not synchronize boards between machines. See [shared board](board.md).

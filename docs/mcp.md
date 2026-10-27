@@ -42,6 +42,7 @@ with `mcp` as its argument and the optional `--state-dir` argument above.
 
 | Tool | Purpose |
 | --- | --- |
+| `read_board`, `update_board` | Read and atomically edit the local shared Markdown board with revision checks. |
 | `connection_status` | Inspect the local broker and peer connections. |
 | `list_agents` | Find local sessions or the permitted remote directory. |
 | `list_messages`, `get_message` | Inspect message history and delivery state. |

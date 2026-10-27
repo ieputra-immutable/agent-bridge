@@ -385,6 +385,22 @@ impl Broker {
             .map_err(|_| anyhow::anyhow!("Database lock poisoned"))?;
         let registration = matches!(&req, Request::Register { .. });
         let result = match req {
+            // Board edits share the broker's local administration mutex. No
+            // network request can invoke this API or select a filesystem path.
+            Request::BoardRead => json!(crate::board::read(&self.state_dir)?),
+            Request::BoardUpdate {
+                expected_revision,
+                edits,
+            } => match crate::board::update(&self.state_dir, &expected_revision, &edits) {
+                Ok(board) => json!({"applied":true,"board":board}),
+                Err(error) => {
+                    if let Some(conflict) = error.downcast_ref::<crate::board::Conflict>() {
+                        json!({"applied":false,"conflict":true,"board":conflict.current,"message":"The board changed. Review this current snapshot and retry your edits with its revision."})
+                    } else {
+                        return Err(error);
+                    }
+                }
+            },
             Request::Register { mut agent, replace } => {
                 if agent.provider == Provider::Claude {
                     agent.endpoint = delivery::validate_socket(Path::new(&agent.endpoint))?
