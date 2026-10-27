@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,7 @@ SH = shutil.which("sh")
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="agent-bridge-installer-test-")
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.home = self.root / "home with spaces"
         self.home.mkdir(mode=0o700)
         self.bin = self.root / "fixture-bin"
@@ -51,16 +52,26 @@ class InstallerTests(unittest.TestCase):
         self.fake("ldd", 'printf "%s\\n" "$FAKE_LDD"\n')
         self.fake("systemctl", '[ "$FAKE_SERVICE_ACTIVE" = 1 ]\n')
         self.fake("launchctl", '[ "$FAKE_SERVICE_ACTIVE" = 1 ]\n')
-        self.fake("stat", """import os,stat,sys
-path=sys.argv[-1]
-info=os.lstat(path)
-owner=info.st_uid
-mode=stat.S_IMODE(info.st_mode)
-if os.environ.get('FAKE_UNSAFE_PATH')==path:mode=0o777
-if os.environ.get('FAKE_FOREIGN_PATH')==path:owner=os.getuid()+1
-suffix=f' {info.st_nlink}' if any('%h' in arg or '%l' in arg for arg in sys.argv[1:-1]) else ''
-print(f'{owner} {mode:o}{suffix}')
-""", python=True)
+        # Use the real host's stat implementation even while emulating the other
+        # platform. A Python interpreter per ancestor made these fixtures much
+        # slower than the installer itself on macOS CI.
+        host_stat = shutil.which("stat")
+        self.assertIsNotNone(host_stat)
+        host_flags = "-f '%u %Lp %l'" if sys.platform == "darwin" else "-c '%u %a %h'"
+        self.fake("stat", f"""requested_format=$2
+path=$3
+metadata=$({shlex.quote(host_stat)} {host_flags} "$path") || exit 1
+set -- $metadata
+owner=$1
+mode=$2
+links=$3
+[ "${{FAKE_UNSAFE_PATH:-}}" != "$path" ] || mode=777
+[ "${{FAKE_FOREIGN_PATH:-}}" != "$path" ] || owner={os.getuid()+1}
+case "$requested_format" in
+    *%h*|*%l*) printf '%s %s %s\\n' "$owner" "$mode" "$links" ;;
+    *) printf '%s %s\\n' "$owner" "$mode" ;;
+esac
+""")
         self.fake("curl", """import json,os,pathlib,shutil,sys
 args=sys.argv[1:]
 with open(os.environ['FAKE_CURL_LOG'],'a') as f:f.write(json.dumps(args)+'\\n')
