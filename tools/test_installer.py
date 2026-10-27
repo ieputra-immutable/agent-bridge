@@ -58,7 +58,8 @@ owner=info.st_uid
 mode=stat.S_IMODE(info.st_mode)
 if os.environ.get('FAKE_UNSAFE_PATH')==path:mode=0o777
 if os.environ.get('FAKE_FOREIGN_PATH')==path:owner=os.getuid()+1
-print(f'{owner} {mode:o}')
+suffix=f' {info.st_nlink}' if any('%h' in arg or '%l' in arg for arg in sys.argv[1:-1]) else ''
+print(f'{owner} {mode:o}{suffix}')
 """, python=True)
         self.fake("curl", """import json,os,pathlib,shutil,sys
 args=sys.argv[1:]
@@ -271,6 +272,70 @@ exit "$FAKE_SERVICE_RESULT"
                 self.assertNotEqual(result.returncode,0)
                 self.assertFalse((self.root / "curl-args").exists())
                 self.env.pop(variable)
+
+    def test_user_owned_installation_directories_are_secured_automatically(self):
+        for system in ["Linux", "Darwin"]:
+            with self.subTest(system=system):
+                self.env["FAKE_OS"] = system
+                self.publish("agent-bridge-macos-x86_64" if system == "Darwin" else self.asset)
+                paths = [self.home, self.home / ".local", self.home / ".local/bin",
+                         self.home / ".local/state", self.home / ".config",
+                         self.home / ".config/systemd", self.home / ".config/systemd/user",
+                         self.home / "Library", self.home / "Library/LaunchAgents",
+                         self.home / "Library/Application Support",
+                         self.home / "Library/Application Support/AgentBridge"]
+                for path in paths:
+                    path.mkdir(parents=True, exist_ok=True)
+                    path.chmod(0o775)
+                unrelated = self.home / "shared-unrelated"
+                unrelated.mkdir(exist_ok=True)
+                unrelated.chmod(0o775)
+                result = self.run_installer(piped=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                needed = [self.home, self.home / ".local/bin", self.home / ".local/state",
+                          self.home / "Library/Application Support/AgentBridge"]
+                needed.append(self.home / (".config/systemd/user" if system == "Linux" else "Library/LaunchAgents"))
+                for path in needed:
+                    self.assertEqual(path.stat().st_mode & 0o022, 0, str(path))
+                self.assertEqual(unrelated.stat().st_mode & 0o777, 0o775)
+                self.assertIn("Securing installation directory:", result.stderr)
+
+    def test_managed_upgrade_secures_existing_service_file_and_executable(self):
+        binary = self.home / ".local/bin/agent-bridge"
+        unit = self.home / ".config/systemd/user/agent-bridge.service"
+        for path in [binary, unit]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("existing managed file")
+            path.chmod(0o775 if path == binary else 0o664)
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path in [binary, unit]:
+            self.assertEqual(path.stat().st_mode & 0o022, 0)
+            self.assertEqual(path.read_text(), "existing managed file")
+        self.assertIn("Securing installation file:", result.stderr)
+
+    def test_managed_hardlinked_service_file_is_not_chmodded(self):
+        unit = self.home / ".config/systemd/user/agent-bridge.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text("shared inode")
+        unit.chmod(0o664)
+        outside = self.root / "external-unit"
+        os.link(unit, outside)
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("hard-linked", result.stderr)
+        self.assertEqual(outside.stat().st_mode & 0o777, 0o664)
+
+    def test_external_writable_symlink_target_is_never_chmodded(self):
+        external = self.root / "external-shared"
+        external.mkdir(mode=0o775)
+        external.chmod(0o775)
+        link = self.home / "linked-bin"
+        link.symlink_to(external, target_is_directory=True)
+        result = self.run_installer("--no-service", "--bin-dir", str(link))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(external.stat().st_mode & 0o777, 0o775)
+        self.assertFalse((self.root / "curl-args").exists())
 
     def test_relative_or_control_temporary_paths_fail_immediately(self):
         (self.root / "relative").mkdir()

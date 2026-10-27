@@ -90,29 +90,57 @@ else
     fail 'sha256sum or shasum is required to verify the download'
 fi
 
+# Resolve the repair boundary physically: a symlink below HOME must never let us
+# change permissions on a directory elsewhere on the machine.
+physical_home=$(CDPATH= cd "$HOME" && pwd -P) || fail 'cannot resolve HOME'
 # Protect private staging and destination paths against replacement by another
 # user through a writable/foreign-owned ancestor, including symlink ancestors.
-check_directory_chain() {
+check_directory_chain() (
     directory=$1
-    while :; do
-        if [ "$platform" = macos ]; then
-            metadata=$(stat -f '%u %Lp' "$directory") || fail 'cannot inspect an installation directory'
+    # Secure parents before descendants so a writable parent cannot redirect a
+    # later chmod. The subshell keeps recursive calls' variables independent.
+    if [ "$directory" != / ]; then
+        parent_directory=${directory%/*}
+        [ -n "$parent_directory" ] || parent_directory=/
+        check_directory_chain "$parent_directory" || exit 1
+    fi
+    if [ "$platform" = macos ]; then
+        metadata=$(stat -f '%u %Lp' "$directory") || fail 'cannot inspect an installation directory'
+    else
+        metadata=$(stat -c '%u %a' "$directory") || fail 'cannot inspect an installation directory'
+    fi
+    directory_owner=${metadata%% *}
+    directory_mode=${metadata#* }
+    case "$directory_owner" in ''|*[!0-9]*) fail 'cannot identify directory owner' ;; esac
+    case "$directory_mode" in ''|*[!0-7]*) fail 'cannot identify directory permissions' ;; esac
+    [ "$directory_owner" = "$installer_uid" ] || [ "$directory_owner" = 0 ] || fail 'installation directories must belong to your user or root'
+    if [ ! -L "$directory" ] && [ "$((0$directory_mode & 0022))" -ne 0 ]; then
+        if [ "$directory_owner" = 0 ] && [ "$((0$directory_mode & 01000))" -ne 0 ]; then
+            : # Shared root-owned sticky temporary directory.
         else
-            metadata=$(stat -c '%u %a' "$directory") || fail 'cannot inspect an installation directory'
+            physical_checked=$(CDPATH= cd "$directory" && pwd -P) || fail "cannot resolve installation directory: $directory"
+            case "$physical_checked" in
+                "$physical_home"|"$physical_home"/*)
+                    [ "$directory_owner" = "$installer_uid" ] || fail "installation directory is writable by others and is not owned by you: $directory"
+                    physical_parent_to_check=${physical_checked%/*}
+                    [ -n "$physical_parent_to_check" ] || physical_parent_to_check=/
+                    check_directory_chain "$physical_parent_to_check" || exit 1
+                    printf 'Securing installation directory: %s (removing group/other write access)\n' "$directory" >&2
+                    chmod go-w "$physical_checked" || fail "cannot secure installation directory: $directory"
+                    if [ "$platform" = macos ]; then
+                        repaired_metadata=$(stat -f '%u %Lp' "$physical_checked")
+                    else
+                        repaired_metadata=$(stat -c '%u %a' "$physical_checked")
+                    fi
+                    repaired_owner=${repaired_metadata%% *}
+                    repaired_mode=${repaired_metadata#* }
+                    [ "$repaired_owner" = "$installer_uid" ] && [ "$((0$repaired_mode & 0022))" -eq 0 ] || fail "installation directory is still writable by others: $directory"
+                    ;;
+                *) fail "installation directory is writable by others outside your home: $directory" ;;
+            esac
         fi
-        directory_owner=${metadata%% *}
-        directory_mode=${metadata#* }
-        case "$directory_owner" in ''|*[!0-9]*) fail 'cannot identify directory owner' ;; esac
-        case "$directory_mode" in ''|*[!0-7]*) fail 'cannot identify directory permissions' ;; esac
-        [ "$directory_owner" = "$installer_uid" ] || [ "$directory_owner" = 0 ] || fail 'installation directories must belong to your user or root'
-        if [ ! -L "$directory" ] && [ "$((0$directory_mode & 0022))" -ne 0 ]; then
-            [ "$directory_owner" = 0 ] && [ "$((0$directory_mode & 01000))" -ne 0 ] || fail 'installation directories must not be group/other writable (except root-owned sticky temporary directories)'
-        fi
-        [ "$directory" != / ] || break
-        directory=${directory%/*}
-        [ -n "$directory" ] || directory=/
-    done
-}
+    fi
+)
 safe_directory() {
     [ -d "$1" ] || fail 'installation directory does not exist'
     check_directory_chain "$1"
@@ -133,6 +161,33 @@ secure_create_directory() {
     check_existing_ancestor "$1"
     mkdir -p "$1"
     safe_directory "$1"
+}
+# Older/manual installs may have used the user's default group-writable umask.
+# Normalize only the two files this managed upgrade will replace or preserve.
+secure_existing_install_file() {
+    install_file=$1
+    [ -e "$install_file" ] || [ -L "$install_file" ] || return 0
+    [ -f "$install_file" ] && [ ! -L "$install_file" ] || fail "installation file is not a regular non-symlink file: $install_file"
+    install_parent=${install_file%/*}
+    physical_parent=$(safe_directory "$install_parent")
+    case "$physical_parent" in
+        "$physical_home"|"$physical_home"/*) ;;
+        *) fail "managed installation file is outside your home: $install_file" ;;
+    esac
+    if [ "$platform" = macos ]; then
+        file_metadata=$(stat -f '%u %Lp %l' "$install_file")
+    else
+        file_metadata=$(stat -c '%u %a %h' "$install_file")
+    fi
+    [ "${file_metadata%% *}" = "$installer_uid" ] || fail "installation file is not owned by you: $install_file"
+    file_details=${file_metadata#* }
+    file_mode=${file_details%% *}
+    file_links=${file_details#* }
+    [ "$file_links" = 1 ] || fail "refusing to change a hard-linked installation file: $install_file"
+    if [ "$((0$file_mode & 0022))" -ne 0 ]; then
+        printf 'Securing installation file: %s (removing group/other write access)\n' "$install_file" >&2
+        chmod go-w "$install_file" || fail "cannot secure installation file: $install_file"
+    fi
 }
 check_binary_destination() {
     destination=$bin_dir/agent-bridge
@@ -159,6 +214,15 @@ check_binary_destination() {
 # Do these checks before downloading or executing an asset.
 absolute_path TMPDIR "${TMPDIR:-/tmp}"
 check_existing_ancestor "$bin_dir"
+if [ "$no_service" = false ]; then
+    if [ "$platform" = linux ]; then
+        check_existing_ancestor "$HOME/.config/systemd/user"
+    else
+        check_existing_ancestor "$HOME/Library/LaunchAgents"
+    fi
+    check_existing_ancestor "$HOME/.local/state/agent-bridge-backups"
+    check_existing_ancestor "${state_dir:-$HOME/Library/Application Support/AgentBridge}"
+fi
 private_tmp_parent=$(safe_directory "${TMPDIR:-/tmp}")
 
 work_dir=
@@ -236,6 +300,12 @@ fi
 printf 'License and dependency notices: %s\n' "$notice_directory"
 
 if [ "$no_service" = false ]; then
+    secure_existing_install_file "$bin_dir/agent-bridge"
+    if [ "$platform" = linux ]; then
+        secure_existing_install_file "$HOME/.config/systemd/user/agent-bridge.service"
+    else
+        secure_existing_install_file "$HOME/Library/LaunchAgents/local.agent-bridge.plist"
+    fi
     # Service code stops/backups the old managed service and performs a recoverable
     # binary/state upgrade. Do not replace the installed executable beforehand.
     if [ -n "$state_dir" ]; then

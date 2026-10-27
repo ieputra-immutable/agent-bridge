@@ -12,6 +12,12 @@ platforms are Linux x86_64/arm64 with glibc 2.35 or newer, and macOS Intel/Apple
 Silicon with macOS 13 or newer. Alpine/musl and older systems can build from source.
 macOS binaries are ad-hoc signed, not Apple notarized.
 
+The installer automatically removes group/other write permission from existing
+user-owned directories along its installation paths inside your home, printing
+each change. It does not change permissions recursively or modify directories
+outside your home; unsafe external or foreign-owned paths are refused with their
+path shown.
+
 The executable goes to `~/.local/bin/agent-bridge`. Add `~/.local/bin` to your PATH
 if it is not already present. Linux uses a systemd user service named
 `agent-bridge.service`; macOS uses the `local.agent-bridge` LaunchAgent. They start
