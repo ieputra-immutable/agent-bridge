@@ -7,8 +7,7 @@ does not need sudo, Rust, Node.js or a model API key.
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/jasadams/agent-bridge/main/install.sh | sh
 ```
 
-This installs the **dogfood prerelease**, not an official stable release. Supported
-platforms are Linux x86_64/arm64 with glibc 2.35 or newer, and macOS Intel/Apple
+The installer selects the current published build. Supported platforms are Linux x86_64/arm64 with glibc 2.35 or newer, and macOS Intel/Apple
 Silicon with macOS 13 or newer. Alpine/musl and older systems can build from source.
 macOS binaries are ad-hoc signed, not Apple notarized.
 
@@ -61,10 +60,10 @@ identities and history. For an existing service using a custom state directory,
 pass that same directory; the installer refuses ambiguous or mismatched service
 state instead of risking a rollback against the wrong database.
 
-`--version dogfood-COMMIT_PREFIX` pins an immutable published build. Use a tag listed
-on the repository's prerelease page; the prefix is the first 12 hexadecimal commit
-characters. The `dogfood` convenience channel moves only after all platform builds
-and checks succeed. `status.build_commit` identifies CI-built source revisions.
+`--version RELEASE_TAG` pins a specific published build. Choose the exact tag from
+[release downloads](https://github.com/jasadams/agent-bridge/releases). The default
+channel advances after all platform builds and checks succeed.
+`status.build_commit` identifies the installed source revision.
 
 ## Updates, backups and removal
 
@@ -100,7 +99,7 @@ and inspect the script before running it instead.
 
 Versioned license notices are retained under
 `~/.local/share/agent-bridge/licenses/COMMIT/` (or inside a custom binary directory's
-`.agent-bridge-licenses/COMMIT/`). Each immutable prerelease provides its full
+`.agent-bridge-licenses/COMMIT/`). Each published build provides its full
 corresponding source, locked dependency sources and offline Cargo configuration.
 The original project is GPL-3.0-or-later; dependencies retain their own licenses.
 
@@ -113,6 +112,6 @@ cargo build --release --locked
 ./target/release/agent-bridge service install
 ```
 
-Dogfood CI uses Rust 1.98.0. Source builds need the platform C toolchain. The service
+Release builds use Rust 1.98.0. Source builds need the platform C toolchain. The service
 can run without a Codex executable installed; private native delivery requires a
 compatible running native daemon and an already loaded destination session.

@@ -11,7 +11,7 @@ Usage: install.sh [--version TAG] [--no-service] [--bin-dir ABSOLUTE_PATH]
                   [--state-dir ABSOLUTE_PATH]
 
 Downloads a SHA-256 checked Linux/macOS executable from jasadams/agent-bridge.
-The default channel is the dogfood prerelease, not an official stable release.
+The installer selects the current published build by default.
 Installs and starts the per-user service unless --no-service is supplied.
 A custom --bin-dir requires --no-service. No sudo, Rust toolchain or Node.js needed.
 Binary-only updates refuse the default path when a managed service is configured.
@@ -243,7 +243,7 @@ download() {
         --silent --show-error --retry 3 --connect-timeout 10 --max-time 300 \
         --output "$2" "$1" || fail "download failed; check that release '$version' has published $asset and SHA256SUMS"
 }
-printf 'Downloading Agent Bridge (%s, %s/%s)...\n' "$version" "$platform" "$arch"
+printf 'Downloading Agent Bridge for %s/%s...\n' "$platform" "$arch"
 download "$base_url/SHA256SUMS" "$work_dir/SHA256SUMS"
 for filename in "$asset" LICENSE THIRD_PARTY_LICENSES.txt SOURCE_COMMIT; do
     download "$base_url/$filename" "$work_dir/$filename"

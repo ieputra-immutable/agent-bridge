@@ -38,6 +38,17 @@ Adding the server does not grant blanket approval for its tools or change native
 permissions. Other stdio-capable clients can launch the same absolute executable
 with `mcp` as its argument and the optional `--state-dir` argument above.
 
+## Connect Claude Code
+
+```sh
+claude mcp add --transport stdio --scope user agent-bridge -- "$HOME/.local/bin/agent-bridge" mcp
+```
+
+Use `/mcp` to inspect the server. Native session registration still uses the
+lifecycle hooks described in [native session setup](native-sessions.md).
+See the [official Claude Code MCP documentation](https://code.claude.com/docs/en/mcp)
+for client scopes and approvals.
+
 ## Tools
 
 | Tool | Purpose |

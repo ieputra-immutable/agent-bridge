@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package immutable source and original locked dependency licenses for dogfooding."""
+"""Package immutable source and original locked dependency licenses for release."""
 import argparse
 import hashlib
 import json
@@ -93,10 +93,10 @@ def main():
             output.add(source, arcname='agent-bridge',
                        filter=lambda info: normalized_entry(info, timestamp))
     (dist / 'RELEASE_NOTES.md').write_text(
-        '# Agent Bridge dogfood build\n\n'
-        'Development prerelease; not a stable release or security certification.\n\n'
+        '# Agent Bridge\n\n'
+        'Peer-to-peer agent messaging, MCP tools and a live shared Markdown board.\n\n'
         f'Source commit: `{args.commit}`\n\n'
-        f'Immutable build: `dogfood-{args.commit[:12]}`. The `dogfood` convenience channel moves.\n\n'
+        f'Build: `{args.commit[:12]}`. Install a specific release tag to pin this build.\n\n'
         'Linux: x86_64/aarch64, glibc 2.35 or newer. macOS: Intel/Apple Silicon, macOS 13 or newer.\n'
         'macOS binaries are ad-hoc signed, not Apple notarized.\n\n'
         'SHA256SUMS protects download integrity; it is not an independent publisher signature.\n'
