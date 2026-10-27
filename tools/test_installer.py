@@ -229,6 +229,7 @@ exit "$FAKE_SERVICE_RESULT"
             self.skipTest("shasum is unavailable")
         if (self.bin / "sha256sum").exists():
             (self.bin / "sha256sum").unlink()
+        (self.bin / "shasum").unlink(missing_ok=True)
         (self.bin / "shasum").symlink_to(available)
         self.env["FAKE_SERVICE_RESULT"] = "42"
         result = self.run_installer()
