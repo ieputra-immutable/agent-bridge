@@ -66,6 +66,12 @@ existing private broker without per-call CLI processes. Owner confirmation, trus
 and grant checks remain in place. Native adapters still deliver incoming events;
 MCP provides the structured command interface. See [MCP setup](mcp.md).
 
+MCP agent discovery defaults to local registrations. Remote discovery requires an
+explicit peer alias or ID and returns only that peer's permitted directory.
+Agents can share their own exact registered session through the existing
+session-sharing tools when instructed by their local owner; other and future
+sessions remain private by default.
+
 ## Local shared Markdown board
 
 One content-agnostic Markdown document is shared through local broker RPC and

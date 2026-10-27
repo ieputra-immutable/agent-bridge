@@ -489,8 +489,11 @@ impl Broker {
                 network["configured"] = json!(db.network_config()?);
                 json!({"version":env!("CARGO_PKG_VERSION"),"build_commit":crate::BUILD_COMMIT,"pid":std::process::id(),"state_dir":self.state_dir,"paused":db.paused()?,"messages":db.counts()?,"codex_discovery":self.discovery_status.lock().unwrap().clone(),"network":network,"monitor":self.monitor_control.lock().unwrap().status(),"machine":self.local_machine(&db)?})
             }
-            Request::RemoteList => {
-                let mut agents = db.remote_agents()?;
+            Request::RemoteList | Request::RemoteListPeer { .. } => {
+                let mut agents = match &req {
+                    Request::RemoteListPeer { peer } => db.remote_agents_for(peer)?,
+                    _ => db.remote_agents()?,
+                };
                 let status = self.network_status.lock().unwrap().clone();
                 if let Some(agents) = agents.as_array_mut() {
                     for agent in agents {

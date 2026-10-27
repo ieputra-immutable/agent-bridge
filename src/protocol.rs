@@ -202,6 +202,9 @@ pub enum Request {
         alias: Option<String>,
     },
     RemoteList,
+    RemoteListPeer {
+        peer: String,
+    },
     NetworkConfigure {
         enabled: bool,
         #[serde(default)]

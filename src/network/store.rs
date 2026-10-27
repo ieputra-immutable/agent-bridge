@@ -179,7 +179,21 @@ impl Db {
     }
 
     pub fn remote_agents(&self) -> Result<Value> {
-        let rows = self.conn.prepare("SELECT r.peer_id,p.alias,r.agent FROM remote_agents r JOIN peers p ON p.peer_id=r.peer_id WHERE p.revoked=0 ORDER BY r.peer_id,r.name")?.query_map([], |r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        self.remote_agents_filtered(None)
+    }
+
+    pub fn remote_agents_for(&self, peer: &str) -> Result<Value> {
+        ensure!(
+            !peer.trim().is_empty(),
+            "Choose a nonempty peer alias or ID"
+        );
+        let peer = self.peer(peer)?;
+        self.require_peer(&peer.peer_id)?;
+        self.remote_agents_filtered(Some(&peer.peer_id))
+    }
+
+    fn remote_agents_filtered(&self, peer: Option<&str>) -> Result<Value> {
+        let rows = self.conn.prepare("SELECT r.peer_id,p.alias,r.agent FROM remote_agents r JOIN peers p ON p.peer_id=r.peer_id WHERE p.revoked=0 AND (?1 IS NULL OR r.peer_id=?1) ORDER BY r.peer_id,r.name")?.query_map([peer], |r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut result = Vec::new();
         for (peer, alias, agent) in rows {
             let agent: RemoteAgent = serde_json::from_str(&agent)?;

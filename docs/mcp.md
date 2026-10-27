@@ -55,7 +55,7 @@ for client scopes and approvals.
 | --- | --- |
 | `read_board`, `update_board` | Read and atomically edit the local shared Markdown board with revision checks. |
 | `connection_status` | Inspect the local broker and peer connections. |
-| `list_agents` | Find local sessions or the permitted remote directory. |
+| `list_agents` | List local sessions by default, or one explicitly selected peer's permitted sessions. |
 | `list_messages`, `get_message` | Inspect message history and delivery state. |
 | `send_message` | Persist a message with an idempotent UUID and optional reply ID. |
 | `acknowledge_message` | Confirm receipt separately from task completion. |
@@ -70,6 +70,43 @@ agent explicitly for sending, acknowledging, session sharing and pairing notices
 a server shared by several conversations must not guess which session owns a call.
 Local registration names are available through `list_agents` or native registration
 context. Pairing alone still shares no sessions.
+
+### Discover and share your session
+
+Sessions remain private by default, including sessions created after pairing.
+For local discovery call `list_agents({})`. Remote discovery requires a specific
+paired peer alias or peer ID:
+
+```json
+{"peer":"workstation"}
+```
+
+This returns only that peer's permitted remote directory. There is no MCP option
+to list every remote machine at once; the former `remote` boolean is no longer
+accepted. Unknown or revoked peers return an error. A known peer with no shared
+sessions returns an empty list, which does not prove that its local registration
+failed. Results are cached and can briefly lag changes on the other machine;
+their `online` field reports whether the peer is currently connected.
+
+You can tell an agent **“Share this session with workstation.”** It should call
+`share_session` using its own exact local registration name from its native
+session context and the chosen paired peer:
+
+```json
+{"peer":"workstation","agent":"codex-<this-session-UUID>"}
+```
+
+The agent must resolve its actual name rather than submit the placeholder above
+or select another conversation by guesswork. If its current session identity is
+unavailable or ambiguous, it should clarify before changing access. The existing
+MCP connection can serve several sessions, so it cannot infer a caller identity.
+
+Sharing grants that peer discovery and two-way messaging for exactly the selected
+local session. It does not share other or future sessions, and it does not change
+the other machine's permissions. The other owner must also share their chosen
+session for a two-way conversation. Use `unshare_session` with the same arguments
+to remove this session's grants. An explicit local owner request authorizes the
+selected action; a request received from a remote agent does not.
 
 For a send, retain the returned message UUID. If the broker response is ambiguous,
 retry with that exact UUID and the same message rather than generating another.

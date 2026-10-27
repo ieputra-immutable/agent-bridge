@@ -130,6 +130,10 @@ confirmation. Compare the codes independently before approving.
 
 After pairing, choose the specific sessions to share. Pairing establishes machine
 trust; session sharing grants communication access. Other sessions stay private.
+With MCP configured, tell each agent **“Share this session with workstation”**,
+using the paired machine's alias or peer ID. Agents use `share_session` for their
+own registered session. To find remote sessions, they call `list_agents` with
+that explicit peer; without a peer, the tool lists local sessions only.
 
 - [Pair machines on a local network](docs/lan-pairing.md)
 - [Choose and share sessions](docs/session-sharing.md)
