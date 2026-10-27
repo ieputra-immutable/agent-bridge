@@ -39,3 +39,10 @@ prereleases and updating the moving convenience channel. Corresponding source
 includes locked dependency sources and offline build configuration. The source
 revision is exposed in CI-built status metadata. See [installation](install.md).
 This remains dogfooding, not an official stable release.
+
+Native CI additionally exercises repeated threaded and separate-process identity
+initialization with both process-local and filesystem serialization. A minimal
+vendored relay fix prevents non-reservation connection closure from incorrectly
+reporting a live reservation as closed; retained upstream tests and a focused
+regression cover the event semantics. No relay wire protocol or trust policy is
+changed.

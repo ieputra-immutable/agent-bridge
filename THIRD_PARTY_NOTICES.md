@@ -11,6 +11,7 @@ metadata and `PATCHES.md` describing the local changes:
 - `vendor/libp2p-rendezvous` — MIT, copyright 2021 COMIT Network.
 - `vendor/libp2p-autonat` — MIT, copyright 2021 Protocol Labs.
 - `vendor/libp2p-dcutr` — MIT, copyright 2021 Protocol Labs.
+- `vendor/libp2p-relay` — MIT, Protocol Labs and Parity Technologies; see retained notices.
 
 Registry dependencies and their transitive dependencies retain the licenses
 specified by their package metadata and distributed license files. `Cargo.lock`

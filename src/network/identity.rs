@@ -12,12 +12,20 @@ use std::{
         unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     },
     path::Path,
+    sync::Mutex,
 };
 use zeroize::Zeroizing;
 
 const KEY_FILE: &CStr = c"identity.key";
 const LOCK_FILE: &CStr = c"identity.lock";
 const MAX_KEY_BYTES: u64 = 1024;
+
+// A process gate complements the cross-process advisory lock. Keep the entire
+// descriptor/open/publish/load lifetime inside it: no concurrent caller in this
+// process may observe the temporary two-link publication state or close another
+// lock descriptor while an identity operation is still in progress. A single
+// bounded gate also avoids a path-keyed registry and symlink/alias lock bypasses.
+static IDENTITY_GATE: Mutex<()> = Mutex::new(());
 
 /// The full canonical PeerId is also the fingerprint: it binds the public key.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -33,6 +41,9 @@ pub struct Identity {
 
 impl Identity {
     pub fn load_or_create(state_dir: &Path) -> Result<Self> {
+        let _process_guard = IDENTITY_GATE.lock().map_err(|_| {
+            anyhow::anyhow!("Identity process lock is poisoned; refusing to change keys")
+        })?;
         DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -43,7 +54,9 @@ impl Identity {
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(state_dir)
             .context("Identity state directory must be a real directory")?;
-        let metadata = directory.metadata()?;
+        let metadata = directory
+            .metadata()
+            .context("Could not inspect opened identity state directory")?;
         ensure!(
             metadata.uid() == unsafe { libc::geteuid() },
             "Identity state directory belongs to another user"
@@ -55,7 +68,8 @@ impl Identity {
 
         // Serialize readers too: publication briefly has two links before the
         // temporary link is removed, while permanent hard links are rejected.
-        let lock = open_relative(&directory, LOCK_FILE, libc::O_RDWR | libc::O_CREAT)?;
+        let lock = open_relative(&directory, LOCK_FILE, libc::O_RDWR | libc::O_CREAT)
+            .context("Could not open identity lock file")?;
         validate_private_file(&lock).context("Invalid identity lock file")?;
         lock.lock_exclusive()
             .context("Could not lock identity file")?;
@@ -112,18 +126,24 @@ impl Identity {
         directory
             .sync_all()
             .context("Could not persist identity directory")?;
-        Self::load(&directory)
+        Self::load(&directory).context("Could not reload published identity")
     }
 
     fn load(directory: &File) -> Result<Self> {
-        let file = open_relative(directory, KEY_FILE, libc::O_RDONLY)?;
+        let file = open_relative(directory, KEY_FILE, libc::O_RDONLY)
+            .context("Could not open identity key file")?;
         validate_private_file(&file).context("Invalid identity key file")?;
         ensure!(
-            file.metadata()?.len() <= MAX_KEY_BYTES,
+            file.metadata()
+                .context("Could not inspect identity key length")?
+                .len()
+                <= MAX_KEY_BYTES,
             "Identity key file is too large"
         );
         let mut encoded = Zeroizing::new(Vec::new());
-        file.take(MAX_KEY_BYTES + 1).read_to_end(&mut encoded)?;
+        file.take(MAX_KEY_BYTES + 1)
+            .read_to_end(&mut encoded)
+            .context("Could not read opened identity key")?;
         ensure!(
             encoded.len() as u64 <= MAX_KEY_BYTES,
             "Identity key file is too large"
@@ -172,7 +192,9 @@ fn open_relative(directory: &File, name: &CStr, flags: libc::c_int) -> std::io::
 }
 
 fn validate_private_file(file: &File) -> Result<()> {
-    let metadata = file.metadata()?;
+    let metadata = file
+        .metadata()
+        .context("Could not inspect opened private identity file")?;
     ensure!(metadata.is_file(), "Identity files must be regular files");
     ensure!(
         metadata.uid() == unsafe { libc::geteuid() },

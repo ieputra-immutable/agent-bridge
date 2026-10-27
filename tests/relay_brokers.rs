@@ -417,11 +417,25 @@ async fn relay_restart_recovers_reservations_and_durable_messages_without_pairin
         1
     );
     assert_eq!(a.peers()[0]["grants"].as_array().unwrap().len(), 3);
-    wait("restored relay reservations", || {
-        let status = restarted.status.borrow();
-        (status["reservations"].as_u64().unwrap_or_default() >= 2).then_some(Value::Null)
+    let mut last_observation = Value::Null;
+    timeout(Duration::from_secs(40), async {
+        loop {
+            let relay_status = restarted.status.borrow().clone();
+            last_observation = serde_json::json!({
+                "relay":relay_status,
+                "source_network":a.request(Request::Status)["network"],
+                "destination_network":b.request(Request::Status)["network"],
+            });
+            if relay_status["reservations"].as_u64().unwrap_or_default() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
     })
-    .await;
+    .await
+    .unwrap_or_else(|_| {
+        panic!("timeout waiting restored relay reservations: {last_observation:#}")
+    });
     assert!(
         a.request(Request::Status)["network"]["paths"]
             .as_array()

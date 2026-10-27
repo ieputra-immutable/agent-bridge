@@ -52,3 +52,5 @@ libp2p-rendezvous = { path = "vendor/libp2p-rendezvous" }
 
 libp2p-autonat = { path = "vendor/libp2p-autonat" }
 libp2p-dcutr = { path = "vendor/libp2p-dcutr" }
+
+libp2p-relay = { path = "vendor/libp2p-relay" }

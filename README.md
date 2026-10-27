@@ -288,6 +288,14 @@ cargo fmt --manifest-path vendor/libp2p-dcutr/Cargo.toml --check
 cargo clippy --offline --locked --manifest-path vendor/libp2p-dcutr/Cargo.toml --all-targets --target-dir target -- -D warnings
 ```
 
+When changing the vendored relay dependency, also run its standalone checks:
+
+```sh
+cargo test --locked --manifest-path vendor/libp2p-relay/Cargo.toml --target-dir target
+cargo fmt --manifest-path vendor/libp2p-relay/Cargo.toml --check
+cargo clippy --locked --manifest-path vendor/libp2p-relay/Cargo.toml --all-targets --target-dir target -- -D warnings
+```
+
 Multicast-sensitive LAN checks and the physical-machine acceptance checklist are documented in [LAN messaging](docs/lan-messaging.md).
 
 Tests cover real broker Unix sockets with a simulated Claude receiver, Codex argument handling without a shell, restart recovery, duplicate IDs, recipient replacement, FIFO submission, fast acknowledgements, pause/resume, reply-chain bounds, hook configuration preservation, endpoint permissions and malformed frames. Discovery tests use a simulated native WebSocket server to verify initial discovery, rename/close events, native-name lookup and duplicate-name rejection without starting or resuming a thread. Claude discovery tests cover native filesystem rename events, startup title loading, partial writes, replaced files, and provider-qualified lookup with cross-provider and manual-alias collisions. These tests require no model calls.
