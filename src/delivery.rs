@@ -115,6 +115,22 @@ pub async fn deliver_with_machines(
     state_dir: &Path,
     machines: &serde_json::Value,
 ) -> Outcome {
+    let content = envelope_with_machines(msg, state_dir, machines);
+    deliver_content(agent, msg, &content).await
+}
+
+/// Locally generated, typed pairing controls use the native transport without
+/// pretending to be an ordinary user or remote agent message.
+pub(crate) async fn deliver_pairing_notice(
+    agent: &Agent,
+    msg: &Message,
+    _state_dir: &Path,
+    notice: &str,
+) -> Outcome {
+    deliver_content(agent, msg, notice).await
+}
+
+async fn deliver_content(agent: &Agent, msg: &Message, content: &str) -> Outcome {
     match agent.provider {
         Provider::Inbox => Outcome::submitted("Available in agent-bridge history --agent user"),
         Provider::Claude => {
@@ -131,9 +147,8 @@ pub async fn deliver_with_machines(
             if let Err(error) = validate_peer(&stream, unsafe { libc::geteuid() }) {
                 return Outcome::failed(error);
             }
-            let mut bytes =
-                serde_json::to_vec(&claude_frame_with_machines(msg, state_dir, machines))
-                    .expect("JSON value serialization");
+            let frame = json!({"type":"user","session_id":msg.recipient_session,"from":format!("agent-bridge:{}",msg.sender),"msg_id":msg.id,"message":{"role":"user","content":content}});
+            let mut bytes = serde_json::to_vec(&frame).expect("JSON value serialization");
             bytes.push(b'\n');
             let mut sent = 0;
             let result = timeout(Duration::from_secs(5), async {
@@ -165,10 +180,7 @@ pub async fn deliver_with_machines(
                 }
             }
         }
-        Provider::Codex => {
-            crate::codex_queue::deliver(msg, &envelope_with_machines(msg, state_dir, machines))
-                .await
-        }
+        Provider::Codex => crate::codex_queue::deliver(msg, content).await,
     }
 }
 

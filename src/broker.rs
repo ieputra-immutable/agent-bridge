@@ -39,6 +39,7 @@ pub struct Broker {
     pub(crate) monitor_control: Arc<Mutex<crate::monitor::Control>>,
     pub(crate) wake: Arc<Notify>,
     pub(crate) network_wake: Arc<Notify>,
+    pub(crate) pairing_notifications: Arc<Mutex<crate::pairing_notifications::State>>,
     pub(crate) lan_pairing: Arc<Mutex<Option<crate::network::lan_pairing::Manager>>>,
     pub(crate) pairing_routes:
         Arc<Mutex<std::collections::BTreeMap<String, Vec<libp2p::Multiaddr>>>>,
@@ -179,6 +180,9 @@ impl Broker {
             monitor_control: Arc::new(Mutex::new(crate::monitor::Control::default())),
             wake: Arc::new(Notify::new()),
             network_wake: Arc::new(Notify::new()),
+            pairing_notifications: Arc::new(Mutex::new(
+                crate::pairing_notifications::State::default(),
+            )),
             lan_pairing: Arc::new(Mutex::new(None)),
             pairing_routes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             network_status: Arc::new(Mutex::new(json!({"enabled":false}))),
@@ -498,6 +502,7 @@ impl Broker {
             Request::RelayRemove { peer_id } => json!(db.remove_relay(&peer_id)?),
             Request::NetworkConfigure { enabled, listen } => {
                 if !enabled {
+                    self.pairing_notifications.lock().unwrap().reset();
                     self.pairing_generation.fetch_add(1, Ordering::SeqCst);
                     self.contact_routes.lock().unwrap().clear();
                     if let Some(manager) = self.lan_pairing.lock().unwrap().as_mut() {
@@ -647,7 +652,36 @@ impl Broker {
             Request::ContactConnect { .. } | Request::ContactLocation { .. } => {
                 anyhow::bail!("Use the asynchronous contact RPC")
             }
+            Request::LanPairingWatch { agent, id, seconds } => {
+                let agent = db.agent(&agent)?;
+                ensure!(
+                    agent.enabled && agent.provider != Provider::Inbox,
+                    "Choose an enabled native agent for pairing notifications"
+                );
+                let now = crate::db::now();
+                let mut pairing = self.lan_pairing.lock().unwrap();
+                let manager = pairing.as_mut().context("No pairing window or exchange")?;
+                if let Some(id) = id.as_deref() {
+                    ensure!(
+                        manager.list(now).iter().any(|view| view.id == id),
+                        "Unknown or expired pairing exchange"
+                    );
+                } else {
+                    ensure!(
+                        manager.window_open(now),
+                        "Open a pairing window before selecting its agent"
+                    );
+                }
+                self.pairing_notifications.lock().unwrap().watch(
+                    agent.clone(),
+                    id.clone(),
+                    seconds,
+                    now,
+                )?;
+                json!({"notification_agent":agent.name,"provider":agent.provider,"session":agent.session,"id":id,"valid_for_seconds":seconds})
+            }
             Request::LanPairingClose => {
+                self.pairing_notifications.lock().unwrap().reset();
                 self.pairing_generation.fetch_add(1, Ordering::SeqCst);
                 self.contact_routes.lock().unwrap().clear();
                 if let Some(manager) = self.lan_pairing.lock().unwrap().as_mut() {
@@ -1025,6 +1059,7 @@ impl Broker {
                 json!(db.grant_peer(&peer, &agent, permission, allow)?)
             }
             Request::PeerRevoke { peer } => {
+                self.pairing_notifications.lock().unwrap().reset();
                 self.pairing_generation.fetch_add(1, Ordering::SeqCst);
                 self.contact_routes.lock().unwrap().clear();
                 // Invalidate all incomplete approvals before revocation can race a delayed MAC.
@@ -1169,6 +1204,8 @@ pub async fn serve_with_discovery(bound: BoundServer, codex_home: Option<PathBuf
     tokio::pin!(dispatcher);
     let monitoring = crate::monitor::run(broker.clone());
     tokio::pin!(monitoring);
+    let pairing_notifications = crate::pairing_notifications::run(broker.clone());
+    tokio::pin!(pairing_notifications);
     let networking = crate::network::worker::run(broker.clone());
     tokio::pin!(networking);
     let observer = async {
@@ -1198,6 +1235,7 @@ pub async fn serve_with_discovery(bound: BoundServer, codex_home: Option<PathBuf
             Some(_)=connections.join_next(),if !connections.is_empty()=>{},
             res=&mut dispatcher=>break res,
             _=&mut monitoring=>unreachable!("Monitor worker runs until shutdown"),
+            res=&mut pairing_notifications=>break res,
             _=&mut networking=>unreachable!("Network worker runs until shutdown"),
             _=&mut claude_observer=>unreachable!("Claude title observer runs until shutdown"),
             _=&mut observer=>unreachable!("Discovery observer runs until shutdown"),

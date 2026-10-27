@@ -250,6 +250,9 @@ enum NetworkAction {
 enum LanPairingAction {
     /// Create a signed public contact link. Owners still compare and approve the code.
     Invite {
+        /// Deliver owner prompts into this local agent (defaults to the current Codex session).
+        #[arg(long)]
+        agent: Option<String>,
         #[arg(long, default_value_t = 600)]
         seconds: u64,
         /// Render a locally generated QR in the terminal.
@@ -261,6 +264,18 @@ enum LanPairingAction {
     },
     /// Accept bounded pairing requests for a short time. Does not grant trust.
     Open {
+        /// Select the local native agent that asks the owner Yes/No.
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, default_value_t = 120)]
+        seconds: u64,
+    },
+    /// Route pairing prompts into one local agent for this window or exchange.
+    Watch {
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        id: Option<String>,
         #[arg(long, default_value_t = 120)]
         seconds: u64,
     },
@@ -270,6 +285,9 @@ enum LanPairingAction {
     List,
     /// Request pairing using a signed contact link, host:port, discovered name or peer ID.
     Connect {
+        /// Select the local native agent that asks the owner Yes/No.
+        #[arg(long)]
+        agent: Option<String>,
         peer: String,
         #[arg(long)]
         address: Option<String>,
@@ -409,6 +427,21 @@ async fn main() -> Result<()> {
         Commands::Pairing {
             action: LanPairingAction::Invite { qr, svg, .. },
         } => Some((*qr, svg.clone())),
+        _ => None,
+    };
+    let notify_agent = match &cli.command {
+        Commands::Pairing {
+            action:
+                LanPairingAction::Open { agent, seconds }
+                | LanPairingAction::Invite { agent, seconds, .. }
+                | LanPairingAction::Connect { agent, seconds, .. },
+        } => {
+            let current = std::env::var("CODEX_THREAD_ID")
+                .ok()
+                .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                .map(|id| format!("codex-{id}"));
+            agent.clone().or(current).map(|agent| (agent, *seconds))
+        }
         _ => None,
     };
     let state_dir = match cli.state_dir {
@@ -558,7 +591,10 @@ async fn main() -> Result<()> {
         },
         Commands::Pairing { action } => match action {
             LanPairingAction::Invite { seconds, .. } => Request::ContactCreate { seconds },
-            LanPairingAction::Open { seconds } => Request::LanPairingOpen { seconds },
+            LanPairingAction::Open { seconds, .. } => Request::LanPairingOpen { seconds },
+            LanPairingAction::Watch { agent, id, seconds } => {
+                Request::LanPairingWatch { agent, id, seconds }
+            }
             LanPairingAction::Close => Request::LanPairingClose,
             LanPairingAction::List => Request::LanPairingList,
             LanPairingAction::Connect {
@@ -566,6 +602,7 @@ async fn main() -> Result<()> {
                 address,
                 seconds,
                 use_invite_relays,
+                ..
             } => {
                 if peer.starts_with(agent_bridge::network::contact::PREFIX) {
                     anyhow::ensure!(
@@ -745,7 +782,26 @@ async fn main() -> Result<()> {
             return Ok(());
         }
     };
+    // Validate the selected local destination before opening admission or
+    // creating an exchange. Failed selection must not leave a hidden window.
+    if let Some((agent, _)) = &notify_agent {
+        let agents = broker::rpc(&state_dir, &Request::List { all: false }).await?;
+        anyhow::ensure!(
+            agents.as_array().is_some_and(|agents| agents
+                .iter()
+                .any(|entry| entry["name"] == *agent
+                    && entry["enabled"] == true
+                    && matches!(entry["provider"].as_str(), Some("claude" | "codex")))),
+            "Pairing notification agent must be an enabled local native session; use --agent with a registered name"
+        );
+    }
     let mut result = broker::rpc(&state_dir, &req).await?;
+    if let Some((agent, seconds)) = notify_agent {
+        let id = result["id"].as_str().map(str::to_owned);
+        let subscription =
+            broker::rpc(&state_dir, &Request::LanPairingWatch { agent, id, seconds }).await?;
+        result["notifications"] = subscription;
+    }
     if let Some((qr, svg)) = invite_output {
         if let Some(path) = svg {
             use std::{io::Write, os::unix::fs::OpenOptionsExt};

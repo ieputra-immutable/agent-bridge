@@ -145,6 +145,12 @@ pub enum Request {
     LanPairingOpen {
         seconds: u64,
     },
+    LanPairingWatch {
+        agent: String,
+        #[serde(default)]
+        id: Option<String>,
+        seconds: u64,
+    },
     LanPairingClose,
     LanPairingList,
     LanPairingConnect {

@@ -4,6 +4,56 @@ The agents can organize pairing over the LAN or [configured public relays](publi
 tokens. Owners still approve locally and compare a short verification code through
 a trusted channel. Machine discovery names are unverified labels.
 
+## Pairing through the agents
+
+An owner can ask their agent to receive a pairing request. The agent opens a
+short window and selects its own local session:
+
+```sh
+agent-bridge pairing open --agent LOCAL_AGENT --seconds 120
+```
+
+The initiating agent runs:
+
+```sh
+agent-bridge pairing connect machine-b --agent LOCAL_AGENT
+```
+
+`pairing invite --agent LOCAL_AGENT` also selects the receiving session while
+creating a signed contact link. Inside Codex, these commands select the current
+registered session automatically using `CODEX_THREAD_ID`; `--agent` selects an
+explicit native Claude or Codex session. Outside a native session, omitting
+`--agent` retains the manual flow below. Notifications never broadcast to all
+running sessions. To attach a session to an already open window or exchange:
+
+```sh
+agent-bridge pairing watch --agent LOCAL_AGENT --seconds 120
+agent-bridge pairing watch --agent LOCAL_AGENT --id REQUEST_ID --seconds 120
+```
+
+The selected receiving session permits the bounded cryptographic key exchange,
+then receives a locally generated control notification. Its agent displays the
+verification code and asks: **Does this match the other owner's screen? Yes or
+no.** An explicit local yes permits the agent to confirm that exact exchange;
+a no cancels it. Owners need not transfer commands or messages between agents.
+The other agent receives its own prompt, and both receive completion updates.
+Once an owner has confirmed, the waiting notification explicitly tells the agent
+not to ask for confirmation again. Notification receipt does not imply approval.
+
+A first connection still needs an independent code comparison. Unverified LAN
+names and a self-signed link received from an unknown peer do not establish which
+machine the owner intended. Agents must not exchange their local codes over the
+pairing channel and treat a match as human verification.
+
+Notification admission is temporary and explicitly local. Each window can select
+only one incoming exchange; repeated packets do not repeat prompts. Peers supply
+structured handshake data, not notification text or native session names. The
+chosen provider/session is pinned, and disabled or replaced registrations cannot
+inherit the notification permission. Closing the window, revoking trust, disabling
+networking or restarting clears the ephemeral subscription. Existing transport
+rate limits, request bounds and expiry also apply; this is not a general messaging
+channel for untrusted peers.
+
 ## Walkthrough
 
 Both brokers must be running with LAN networking enabled:
@@ -73,11 +123,11 @@ cannot restore trust.
 
 ## Owner interaction and limits
 
-This milestone exposes local CLI/RPC controls, not a desktop notification or web
-approval UI. Owners ask their agents to inspect pending requests. Unknown peers
-cannot inject model prompts or wake native sessions. A future local UI can use the
-same controls. The initial receiving-owner action is required so every LAN peer
-cannot freely generate approval requests at all times.
+Local CLI/RPC controls support both the manual flow and the opted-in native
+notifications above. There is no desktop or web approval UI. Without an explicit
+local notification subscription, unknown peers cannot wake native sessions. The
+initial receiving-owner action is required so every LAN peer cannot freely
+generate approval requests at all times.
 
 Pairing lasts 30–600 seconds, default 120. Eight attempts/sessions per minute are
 allowed by the state manager, with at most eight retained sessions. Duplicate

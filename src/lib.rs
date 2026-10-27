@@ -13,6 +13,7 @@ pub mod monitor;
 mod monitor_data;
 
 mod codex_queue;
+mod pairing_notifications;
 
 /// Source revision provided by the dogfood build workflow.
 pub const BUILD_COMMIT: Option<&str> = option_env!("AGENT_BRIDGE_BUILD_COMMIT");

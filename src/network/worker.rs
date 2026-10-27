@@ -299,6 +299,10 @@ pub async fn run(broker: Broker) {
             pairing_busy.clear();
             pairing_next.clear();
             if configured.is_some() {
+                broker
+                    .pairing_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                broker.pairing_notifications.lock().unwrap().reset();
                 if let Some(manager) = broker.lan_pairing.lock().unwrap().as_mut() {
                     manager.reset();
                 }

@@ -46,3 +46,11 @@ vendored relay fix prevents non-reservation connection closure from incorrectly
 reporting a live reservation as closed; retained upstream tests and a focused
 regression cover the event semantics. No relay wire protocol or trust policy is
 changed.
+
+## Native pairing prompts
+
+A locally selected native session can receive bounded pairing control notices,
+ask its owner Yes/No after independently comparing the displayed code, and receive
+completion updates automatically. The notification path carries no arbitrary
+remote message text and grants neither trust nor session access by itself. Manual
+pairing remains available. See [owner-approved pairing](lan-pairing.md).
