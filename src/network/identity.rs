@@ -68,8 +68,22 @@ impl Identity {
 
         // Serialize readers too: publication briefly has two links before the
         // temporary link is removed, while permanent hard links are rejected.
-        let lock = open_relative(&directory, LOCK_FILE, libc::O_RDWR | libc::O_CREAT)
-            .context("Could not open identity lock file")?;
+        // Darwin can return spurious ENOENT when concurrent openat calls use
+        // O_CREAT without O_EXCL. Create exclusively, or open the existing lock
+        // without creation; keep the same descriptor-relative safety checks.
+        // See entireio/cli commit fb597b386a1fa2b20adc90f4603c99ba7ccb2edf.
+        let lock = match open_relative(
+            &directory,
+            LOCK_FILE,
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+        ) {
+            Ok(file) => Ok(file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                open_relative(&directory, LOCK_FILE, libc::O_RDWR)
+            }
+            Err(error) => Err(error),
+        }
+        .context("Could not open identity lock file")?;
         validate_private_file(&lock).context("Invalid identity lock file")?;
         lock.lock_exclusive()
             .context("Could not lock identity file")?;

@@ -159,6 +159,14 @@ fn identity_process_child() -> anyhow::Result<()> {
 
 #[test]
 fn independent_processes_publish_one_identity() {
+    // Exercise first creation repeatedly: the Darwin openat create-or-open race
+    // only appears when independent processes encounter a fresh lock name.
+    for _ in 0..8 {
+        independent_processes_publish_one_identity_round();
+    }
+}
+
+fn independent_processes_publish_one_identity_round() {
     let root = private_temp();
     let exe = std::env::current_exe().unwrap();
     let mut children: Vec<_> = (0..4)
