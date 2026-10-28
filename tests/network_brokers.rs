@@ -226,10 +226,11 @@ async fn two_brokers_deliver_once_to_native_socket_and_sync_acknowledgement_and_
     let local_id = frame["msg_id"].as_str().unwrap().to_owned();
     assert_ne!(local_id, id);
     let content = frame["message"]["content"].as_str().unwrap();
-    assert!(content.starts_with("[Agent Bridge: remote peer message"));
-    let envelope: Value = serde_json::from_str(content.lines().nth(1).unwrap()).unwrap();
-    assert_eq!(envelope["body"], body);
-    assert_eq!(envelope["from"], format!("{alice_id}/user"));
+    assert!(content.starts_with("<cross-session-message from-name=\""));
+    assert!(content.contains(body));
+    assert_eq!(frame["from"], format!("{alice_id}/user"));
+    assert!(content.contains(&format!("Reply to: {alice_id}/user")));
+    assert!(!content.contains("Agent Bridge"));
     broker::rpc(
         &bob.state,
         &Request::Ack {

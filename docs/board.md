@@ -5,6 +5,12 @@ Its contents are entirely up to the user and agents: tables, notes, checklists,
 headings or any other Markdown. Agent Bridge does not require task/status fields
 or automatically change the content when an agent starts or stops work.
 
+Use it as the user's at-a-glance view across many agents. Keep each entry brief:
+the current task, status, and any blocker or action needed from the user. Leave
+logs, reasoning and implementation detail in the agent's native terminal or
+session, where the user can inspect them. Refresh an existing entry when its
+status changes instead of appending a running history.
+
 Open the live terminal view:
 
 ```sh
@@ -145,8 +151,9 @@ it is not a separate authentication boundary between processes of the same OS us
 For example, the user can instruct their agents:
 
 > Keep our shared board up to date with a Markdown table. Give each agent one row
-> containing its current task, status, whether it needs me, and a brief note.
-> Update your own row when work changes. Preserve other agents' rows and notes.
+> containing its current task, status, and any blocker or action needed from me.
+> Keep the row short; leave detailed progress in your native session. Update your
+> own row when work changes. Preserve other agents' rows and notes.
 > Read the latest board first, and retry conflicts against the returned revision.
 
 Those columns are a user convention, not an application schema. The same tools
