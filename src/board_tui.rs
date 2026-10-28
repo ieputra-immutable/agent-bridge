@@ -84,7 +84,9 @@ fn rendered_markdown(markdown: &str, width: u16) -> (Text<'static>, bool) {
     let rendered = if plain {
         Text::from(safe.as_str())
     } else {
-        let options = tui_markdown::Options::default().table_width(width);
+        let options = tui_markdown::Options::default()
+            .table_width(width)
+            .table_row_dividers(true);
         tui_markdown::from_str_with_options(&safe, &options)
     };
     // Entity decoding can introduce controls that were absent from the source,

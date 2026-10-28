@@ -19,6 +19,8 @@ Quit with `q`, Escape or Ctrl-C. File changes refresh the view automatically;
 a brief broker outage keeps the last content visible and shows a retry status.
 Extremely complex tables fall back to readable plain Markdown to bound rendering
 work.
+Tables include horizontal dividers between rows to keep separate items readable,
+including when their text wraps across several terminal lines.
 
 The broker must be running. Agents use the existing persistent MCP server and its
 `read_board` and `update_board` tools. There is no extra server or binary.
