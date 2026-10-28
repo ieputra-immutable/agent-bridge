@@ -75,8 +75,14 @@ async fn real_broker_routes_native_claude_frame_and_accepts_correlated_reply() {
     assert_eq!(frame["session_id"], session);
     assert_eq!(frame["msg_id"], mid);
     let text = frame["message"]["content"].as_str().unwrap();
-    let envelope: Value = serde_json::from_str(text.lines().nth(1).unwrap()).unwrap();
-    assert_eq!(envelope["body"], body);
+    assert_eq!(frame["from"], "user");
+    assert!(text.starts_with("<cross-session-message from-name=\"user\">\n"));
+    assert!(text.contains(body));
+    assert!(text.contains(&format!(
+        "Message reference: {mid}\nReply to: user\nDelivered to: {name}"
+    )));
+    assert!(!text.contains("Agent Bridge"));
+    assert!(!text.contains("ack --state-dir"));
     let ack = broker::rpc(
         &state,
         &Request::Ack {

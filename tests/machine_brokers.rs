@@ -213,7 +213,12 @@ async fn authenticated_machine_names_survive_renaming_with_pinned_queued_deliver
     BufReader::new(stream).read_line(&mut line).await.unwrap();
     let frame: Value = serde_json::from_str(&line).unwrap();
     let text = frame["message"]["content"].as_str().unwrap();
-    let envelope: Value = serde_json::from_str(text.lines().nth(1).unwrap()).unwrap();
+    let local_id = frame["msg_id"].as_str().unwrap().to_owned();
+    assert!(text.starts_with("<cross-session-message from-name=\"origin/user\">"));
+    assert!(text.contains(&format!("Reply to: {alice_id}/user")));
+    let envelope = bob.request(Request::Get {
+        id: local_id.clone(),
+    });
     assert_eq!(envelope["source_machine"]["machine_name"], "machine-a");
     assert_eq!(envelope["source_machine"]["peer_id"], alice_id);
     assert_eq!(
@@ -221,7 +226,6 @@ async fn authenticated_machine_names_survive_renaming_with_pinned_queued_deliver
         "renamed-machine-b"
     );
     assert_eq!(envelope["destination_machine"]["peer_id"], bob_id);
-    let local_id = envelope["id"].as_str().unwrap().to_owned();
     wait(|| {
         let message = bob.request(Request::Get {
             id: local_id.clone(),
@@ -242,7 +246,7 @@ async fn authenticated_machine_names_survive_renaming_with_pinned_queued_deliver
     bob.request(Request::Send {
         id: reply,
         sender: "reviewer".into(),
-        recipient: envelope["from"].as_str().unwrap().into(),
+        recipient: envelope["sender"].as_str().unwrap().into(),
         body: "reply after rename".into(),
         parent: Some(local_id),
     });

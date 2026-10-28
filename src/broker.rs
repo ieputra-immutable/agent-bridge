@@ -1,6 +1,6 @@
 use crate::{
     db::Db,
-    delivery,
+    delivery, hook,
     network::identity::Identity,
     protocol::{MAX_FRAME, Provider, Request, Response},
 };
@@ -122,6 +122,26 @@ impl Broker {
         } else {
             self.local_machine(db)
         }
+    }
+
+    fn message_sender_name(&self, db: &Db, sender: &str) -> String {
+        if let Some((peer_id, name)) = sender.split_once('/') {
+            let peer = db.peer(peer_id).ok();
+            let qualifier = peer
+                .as_ref()
+                .map(|peer| peer.display_name.as_str())
+                .unwrap_or(peer_id);
+            return format!("{qualifier}/{name}");
+        }
+        // An explicit registration alias is already the agent's chosen name.
+        if let Ok(agent) = db.agent(sender)
+            && sender == hook::routing_name(&agent.provider, &agent.session)
+            && let Ok(Some(name)) = db.display_name(&agent.provider, &agent.session)
+            && !name.trim().is_empty()
+        {
+            return name;
+        }
+        sender.to_owned()
     }
 
     fn message_value(&self, db: &Db, message: &crate::protocol::Message) -> Result<Value> {
@@ -1199,7 +1219,7 @@ impl Broker {
                 let next = {
                     let mut db = self.db.lock().unwrap();
                     db.claim()?.map(|(msg, agent)| {
-                        let machines = json!({"source_machine":self.message_machine(&db, &msg.sender)?,"destination_machine":self.message_machine(&db, &msg.recipient)?});
+                        let machines = json!({"source_machine":self.message_machine(&db, &msg.sender)?,"destination_machine":self.message_machine(&db, &msg.recipient)?,"sender_name":self.message_sender_name(&db, &msg.sender)});
                         Ok::<_, anyhow::Error>((msg, agent, machines))
                     }).transpose()?
                 };
@@ -1368,6 +1388,51 @@ pub async fn rpc(state_dir: &Path, req: &Request) -> Result<Value> {
 #[cfg(test)]
 mod machine_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn message_sender_labels_prefer_native_names_but_preserve_manual_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let bound = Broker::bind(directory.path().join("state"), "/missing/codex".into()).unwrap();
+        let broker = &bound.broker;
+        let mut db = broker.db.lock().unwrap();
+        db.observe_codex(
+            "97e8d81e-073d-4cde-a017-4a8255b7b3b8",
+            Some("researcher"),
+            true,
+        )
+        .unwrap();
+        db.register(
+            &crate::protocol::Agent {
+                name: "reviewer".into(),
+                provider: Provider::Codex,
+                session: "97e8d81e-073d-4cde-a017-4a8255b7b3b8".into(),
+                endpoint: String::new(),
+                enabled: true,
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            broker.message_sender_name(&db, "codex-97e8d81e-073d-4cde-a017-4a8255b7b3b8"),
+            "researcher"
+        );
+        assert_eq!(broker.message_sender_name(&db, "reviewer"), "reviewer");
+        assert_eq!(broker.message_sender_name(&db, "missing"), "missing");
+        assert_eq!(
+            broker.message_sender_name(&db, "unknown-peer/reviewer"),
+            "unknown-peer/reviewer"
+        );
+        db.observe_codex(
+            "97e8d81e-073d-4cde-a017-4a8255b7b3b8",
+            Some("renamed"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            broker.message_sender_name(&db, "codex-97e8d81e-073d-4cde-a017-4a8255b7b3b8"),
+            "renamed"
+        );
+    }
 
     #[tokio::test]
     async fn discovery_names_are_cosmetic_and_pairing_keeps_owner_aliases() {

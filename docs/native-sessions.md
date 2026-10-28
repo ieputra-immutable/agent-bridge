@@ -45,6 +45,21 @@ settings. Agent Bridge leaves those choices and tool approvals under the owner's
 control. See [Claude Code's inbound message controls](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages)
 and [MCP setup](https://code.claude.com/docs/en/mcp).
 
+Ordinary incoming messages use Claude's native cross-session presentation, labelled
+with the sender's native session name or explicit registration alias. Remote names
+include their machine qualifier. The transport name is not part of the agent's name.
+The message contains its text and a short reference (message ID, reply address and
+recipient); repeated JSON envelopes and command instructions are omitted. Startup
+context explains how to acknowledge and reply through the messaging MCP tools or CLI.
+Use the stable addresses in that reference for routing, not a shortened display name
+or Claude's native `SendMessage` tool. Machine metadata remains available through
+`get_message` / `agent-bridge get MESSAGE_ID`.
+
+The cross-session wrapper is an internal Claude format checked against 2.1.300;
+client updates may require compatibility changes. Native control notifications
+(pairing and board changes) keep their separate format. A live UI check is needed
+when qualifying a new client version.
+
 ## Session names
 
 `agent-bridge list` shows enabled registrations, native display names and stable
