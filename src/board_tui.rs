@@ -2,19 +2,21 @@
 use crate::{
     board::{Edit, MAX_BOARD_BYTES, Snapshot},
     board_interaction::{self, Control, Kind},
+    board_selection::{Selection, Viewport},
     broker,
     protocol::Request,
 };
 use anyhow::{Context, Result, ensure};
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use futures::StreamExt;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Position},
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Paragraph, Wrap},
@@ -35,7 +37,11 @@ const MAX_TABLE_CELLS: usize = 20_000;
 struct TerminalRestore;
 impl Drop for TerminalRestore {
     fn drop(&mut self) {
-        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            DisableBracketedPaste,
+            DisableMouseCapture
+        );
         ratatui::restore();
     }
 }
@@ -230,6 +236,9 @@ struct View {
     pending: Option<Save>,
     saving: bool,
     notice: Option<String>,
+    viewport: Option<Viewport>,
+    selection: Option<Selection>,
+    mouse_enabled: bool,
 }
 impl Default for View {
     fn default() -> Self {
@@ -248,13 +257,25 @@ impl Default for View {
             pending: None,
             saving: false,
             notice: None,
+            viewport: None,
+            selection: None,
+            mouse_enabled: true,
         }
     }
 }
 impl View {
-    fn update(&mut self, result: Result<Snapshot>) {
+    /// Return whether visible state changed, keeping native terminal selections
+    /// intact during repeated healthy polls or the same repeated outage.
+    fn update(&mut self, result: Result<Snapshot>) -> bool {
         match result {
             Ok(snapshot) => {
+                let changed = self.error.is_some()
+                    || self.snapshot.as_ref().is_none_or(|old| {
+                        old.revision != snapshot.revision
+                            || old.name != snapshot.name
+                            || old.path != snapshot.path
+                            || old.exists != snapshot.exists
+                    });
                 if self.snapshot.as_ref().map(|old| &old.revision) != Some(&snapshot.revision) {
                     self.width = 0;
                     self.controls = board_interaction::controls(&snapshot.markdown);
@@ -271,8 +292,14 @@ impl View {
                 }
                 self.snapshot = Some(snapshot);
                 self.error = None;
+                changed
             }
-            Err(error) => self.error = Some(safe_line(&format!("{error:#}"))),
+            Err(error) => {
+                let error = safe_line(&format!("{error:#}"));
+                let changed = self.error.as_ref() != Some(&error);
+                self.error = Some(error);
+                changed
+            }
         }
     }
     fn paragraph(&self) -> Paragraph<'static> {
@@ -350,6 +377,19 @@ impl View {
         self.scroll.1 = self.scroll.1.min(self.max_scroll.1);
         frame.render_widget(block, body);
         frame.render_widget(self.paragraph().scroll(self.scroll), inner);
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.area() != inner)
+        {
+            self.selection = None;
+            self.notice = Some("Text selection cancelled because the board layout changed.".into());
+        }
+        if let Some(selection) = &self.selection {
+            selection.paint(frame.buffer_mut());
+        } else {
+            self.viewport = Viewport::capture(frame.buffer_mut(), inner);
+        }
         if let Some(editor) = &self.editor {
             let title = format!(
                 "Text response: {} · Ctrl-S save · Esc cancel · Ctrl-R review/rebase",
@@ -416,7 +456,9 @@ impl View {
             frame.render_widget(block, responses);
             frame.render_widget(Paragraph::new(lines), inner);
         }
-        let status = if self.saving {
+        let status = if self.selection.is_some() {
+            "Selecting text · view frozen · release mouse to copy · Esc cancels".into()
+        } else if self.saving {
             "Saving response…".into()
         } else if let Some(error) = &self.error {
             format!(
@@ -444,11 +486,15 @@ impl View {
         };
         frame.render_widget(Paragraph::new(vec![
             Line::from(safe_line(&status)),
-            Line::from(if self.editor.is_some() { "Enter newline · arrows edit · PgUp/PgDn board · Ctrl-S save · Esc cancel · Ctrl-C quit" } else { "q/Esc quit · j/k scroll · Tab responses · Space toggle · Enter edit · PgUp/PgDn · w wrap · r refresh" }),
+            Line::from(if self.editor.is_some() { "Enter newline · arrows edit · PgUp/PgDn board · Ctrl-S save · Esc cancel · Ctrl-C quit" } else if self.mouse_enabled { "Drag text to copy · m native mouse · q quit · j/k scroll · Tab responses · Space toggle · Enter edit" } else { "m copy-on-select mouse · q quit · j/k scroll · Tab responses · Space toggle · Enter edit · r refresh" }),
         ]), footer);
     }
     fn key(&mut self, key: KeyEvent, page: u16) -> bool {
         if key.kind == KeyEventKind::Release {
+            return false;
+        }
+        if self.selection.take().is_some() && key.code == KeyCode::Esc {
+            self.notice = Some("Text selection cancelled.".into());
             return false;
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -481,6 +527,14 @@ impl View {
             return true;
         }
         match key.code {
+            KeyCode::Char('m') => {
+                self.mouse_enabled = !self.mouse_enabled;
+                self.notice = Some(if self.mouse_enabled {
+                    "Copy-on-select mouse enabled; drag board text to copy.".into()
+                } else {
+                    "Mouse capture disabled; use your terminal's native selection and copy.".into()
+                });
+            }
             KeyCode::Tab | KeyCode::BackTab if !self.controls.is_empty() && !self.saving => {
                 let backwards =
                     key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT);
@@ -525,6 +579,50 @@ impl View {
             _ => (),
         }
         false
+    }
+    fn mouse(&mut self, event: MouseEvent) -> (bool, Option<String>) {
+        if !self.mouse_enabled {
+            return (false, None);
+        }
+        let point = Position::new(event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // A duplicate press while dragging cancels rather than selecting
+                // unseen data from a newly rendered revision behind the frozen view.
+                if self.selection.take().is_some() {
+                    return (true, None);
+                }
+                if let Some(viewport) = &self.viewport
+                    && viewport.area().contains(point)
+                    && self.snapshot.is_some()
+                {
+                    self.selection = Selection::start(viewport.clone(), point);
+                    self.notice = None;
+                    return (true, None);
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(selection) = &mut self.selection {
+                    return (selection.extend(point), None);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(selection) = self.selection.take() {
+                    return (true, selection.finish(point));
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.selection = None;
+                self.scroll.0 = if event.kind == MouseEventKind::ScrollUp {
+                    self.scroll.0.saturating_sub(3)
+                } else {
+                    self.scroll.0.saturating_add(3)
+                };
+                return (true, None);
+            }
+            _ => (),
+        }
+        (false, None)
     }
     fn paste(&mut self, input: &str) {
         if self.saving {
@@ -671,7 +769,7 @@ pub async fn run(state_dir: PathBuf) -> Result<()> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let _restore = TerminalRestore;
     let mut terminal = ratatui::try_init().context("Cannot initialize the board terminal")?;
-    crossterm::execute!(std::io::stdout(), EnableBracketedPaste)
+    crossterm::execute!(std::io::stdout(), EnableBracketedPaste, EnableMouseCapture)
         .context("Cannot enable safe terminal paste")?;
     let mut events = EventStream::new();
     let (refresh, mut requests) = mpsc::channel(1);
@@ -731,7 +829,15 @@ pub async fn run(state_dir: PathBuf) -> Result<()> {
             _ = interrupt.recv() => break,
             event = events.next() => match event {
                 Some(Ok(Event::Key(key))) => {
+                    let previous_mouse_mode = view.mouse_enabled;
                     if view.key(key, terminal.size()?.height.saturating_sub(4)) { break; }
+                    if previous_mouse_mode != view.mouse_enabled {
+                        if view.mouse_enabled {
+                            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+                        } else {
+                            crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+                        }
+                    }
                     if key.code == KeyCode::Char('r') && view.editor.is_none() { let _ = refresh.try_send(()); }
                     if let Some(save) = view.pending.take() {
                         if writes.try_send(save).is_ok() { view.saving = true; } else { view.notice = Some("Another save is pending; draft retained.".into()); }
@@ -739,7 +845,17 @@ pub async fn run(state_dir: PathBuf) -> Result<()> {
                     dirty = true;
                 }
                 Some(Ok(Event::Paste(text))) => { view.paste(&text); dirty = true; }
-                Some(Ok(Event::Resize(..))) => dirty = true,
+                Some(Ok(Event::Mouse(event))) => {
+                    let (changed, copy) = view.mouse(event);
+                    if let Some(text) = copy {
+                        view.notice = Some(match crate::board_clipboard::copy_to_terminal(&text) {
+                            Ok(()) => format!("Copy sent to terminal ({} bytes). Press m for native selection if needed.", text.len()),
+                            Err(error) => format!("Cannot send copy to terminal: {error:#}"),
+                        });
+                    }
+                    dirty |= changed;
+                }
+                Some(Ok(Event::Resize(..))) => { view.selection = None; view.viewport = None; dirty = true; },
                 Some(Ok(_)) => (),
                 Some(Err(error)) => return Err(error).context("Cannot read terminal input"),
                 None => break,
@@ -757,10 +873,9 @@ pub async fn run(state_dir: PathBuf) -> Result<()> {
                     }
                 }
                 match update {
-                    Update::Read(result) => view.update(result),
-                    Update::Saved(save, result) => view.saved(save, result),
+                    Update::Read(result) => dirty |= view.update(result),
+                    Update::Saved(save, result) => { view.saved(save, result); dirty = true; },
                 }
-                dirty = true;
             }
         }
     }
@@ -789,6 +904,162 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+    fn mouse_event(kind: MouseEventKind, point: Position) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: point.x,
+            row: point.y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn mouse_drag_copies_the_frozen_visible_revision_and_ignores_hover() {
+        let mut view = View::default();
+        view.update(Ok(snapshot("COPY_ME original", "one")));
+        let mut terminal = Terminal::new(TestBackend::new(70, 15)).unwrap();
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        let area = view.viewport.as_ref().unwrap().area();
+        let start = Position::new(area.x, area.y);
+        let end = Position::new(area.x + 6, area.y);
+        assert_eq!(
+            view.mouse(mouse_event(MouseEventKind::Moved, start)),
+            (false, None)
+        );
+        assert_eq!(
+            view.mouse(mouse_event(MouseEventKind::Down(MouseButton::Left), start)),
+            (true, None)
+        );
+        assert_eq!(
+            view.mouse(mouse_event(MouseEventKind::Drag(MouseButton::Left), end)),
+            (true, None)
+        );
+        assert_eq!(
+            view.mouse(mouse_event(MouseEventKind::Drag(MouseButton::Left), end)),
+            (false, None)
+        );
+        view.update(Ok(snapshot("AFTER concurrent edit", "two")));
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        assert_eq!(terminal.backend().buffer()[(area.x, area.y)].symbol(), "C");
+        assert_eq!(
+            view.mouse(mouse_event(MouseEventKind::Up(MouseButton::Right), end)),
+            (false, None)
+        );
+        let (dirty, text) = view.mouse(mouse_event(MouseEventKind::Up(MouseButton::Left), end));
+        assert!(dirty);
+        assert_eq!(text.as_deref(), Some("COPY_ME"));
+        assert!(view.pending.is_none(), "copying never edits Markdown");
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        assert_eq!(terminal.backend().buffer()[(area.x, area.y)].symbol(), "A");
+        assert_eq!(
+            view.mouse(mouse_event(MouseEventKind::Up(MouseButton::Left), end)),
+            (false, None)
+        );
+    }
+
+    #[test]
+    fn selection_cancels_on_layout_scroll_and_escape_and_cannot_start_in_chrome() {
+        let mut view = View::default();
+        view.update(Ok(snapshot("body content", "one")));
+        let mut terminal = Terminal::new(TestBackend::new(70, 15)).unwrap();
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        assert_eq!(
+            view.mouse(mouse_event(
+                MouseEventKind::Down(MouseButton::Left),
+                Position::new(0, 0)
+            )),
+            (false, None)
+        );
+        let area = view.viewport.as_ref().unwrap().area();
+        let start = Position::new(area.x, area.y);
+        let end = Position::new(area.x + 5, area.y);
+        view.mouse(mouse_event(MouseEventKind::Down(MouseButton::Left), start));
+        view.mouse(mouse_event(MouseEventKind::Drag(MouseButton::Left), end));
+        view.update(Ok(snapshot("body content\n\n- [ ] New response", "two")));
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        assert!(
+            view.selection.is_none(),
+            "a new Responses pane changes the frozen body rectangle"
+        );
+        assert_eq!(
+            view.mouse(mouse_event(MouseEventKind::Up(MouseButton::Left), end)),
+            (false, None)
+        );
+        let area = view.viewport.as_ref().unwrap().area();
+        let start = Position::new(area.x, area.y);
+        view.mouse(mouse_event(MouseEventKind::Down(MouseButton::Left), start));
+        assert!(!view.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 10));
+        assert!(view.selection.is_none());
+        view.mouse(mouse_event(MouseEventKind::Down(MouseButton::Left), start));
+        assert_eq!(
+            view.mouse(mouse_event(MouseEventKind::ScrollDown, start)),
+            (true, None)
+        );
+        assert!(view.selection.is_none());
+        assert_eq!(view.scroll.0, 3);
+    }
+
+    #[test]
+    fn mouse_mode_toggle_preserves_text_editor_input_and_disables_capture_actions() {
+        let mut view = View::default();
+        view.update(Ok(snapshot(
+            "<!-- board-input: notes -->\n> draft\n<!-- /board-input -->\n",
+            "one",
+        )));
+        let mut terminal = Terminal::new(TestBackend::new(70, 15)).unwrap();
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        press(&mut view, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Char('m'), KeyModifiers::NONE);
+        assert_eq!(view.editor.as_ref().unwrap().draft, "draftm");
+        assert!(view.mouse_enabled);
+        press(&mut view, KeyCode::Esc, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Char('m'), KeyModifiers::NONE);
+        assert!(!view.mouse_enabled);
+        let area = view.viewport.as_ref().unwrap().area();
+        assert_eq!(
+            view.mouse(mouse_event(
+                MouseEventKind::Down(MouseButton::Left),
+                Position::new(area.x, area.y)
+            )),
+            (false, None)
+        );
+        assert!(view.selection.is_none());
+        press(&mut view, KeyCode::Char('m'), KeyModifiers::NONE);
+        assert!(view.mouse_enabled);
+    }
+
+    #[test]
+    fn identical_reads_do_not_redraw_but_errors_recovery_and_metadata_changes_do() {
+        let initial = snapshot("same board", "one");
+        let mut view = View::default();
+        assert!(view.update(Ok(initial.clone())));
+        assert!(!view.update(Ok(initial.clone())));
+        assert!(view.update(Err(anyhow::anyhow!("offline"))));
+        assert!(!view.update(Err(anyhow::anyhow!("offline"))));
+        assert!(view.update(Err(anyhow::anyhow!("different failure"))));
+        assert!(view.update(Ok(initial.clone())));
+        assert!(!view.update(Ok(initial.clone())));
+        for changed in [
+            Snapshot {
+                name: "other".into(),
+                ..initial.clone()
+            },
+            Snapshot {
+                path: PathBuf::from("/other/board.md"),
+                ..initial.clone()
+            },
+            Snapshot {
+                exists: false,
+                ..initial.clone()
+            },
+        ] {
+            let mut view = View::default();
+            assert!(view.update(Ok(initial.clone())));
+            assert!(view.update(Ok(changed.clone())));
+            assert!(!view.update(Ok(changed)));
+        }
     }
     #[test]
     fn generic_markdown_headings_tables_and_unicode_render() {

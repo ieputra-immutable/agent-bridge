@@ -123,6 +123,8 @@ TUI; agents can opt into debounced change notifications through MCP. See
 [shared board usage](docs/board.md).
 Use Tab to select a response, Space to toggle a checkbox, and Enter to edit a text
 field. Ctrl-S saves the text response and Escape cancels the draft.
+Drag to select board text and release to send it to the terminal clipboard. Press
+`m` outside the text editor to switch back to the terminal's own mouse selection.
 
 ## Connect another machine
 

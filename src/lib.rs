@@ -1,6 +1,8 @@
 pub mod board;
+mod board_clipboard;
 pub mod board_interaction;
 mod board_notifications;
+mod board_selection;
 pub mod board_tui;
 pub mod broker;
 pub mod claude_discovery;

@@ -21,6 +21,9 @@ Extremely complex tables fall back to readable plain Markdown to bound rendering
 work.
 Tables include horizontal dividers between rows to keep separate items readable,
 including when their text wraps across several terminal lines.
+Drag across the rendered board to select text; releasing the mouse sends the
+selection to the terminal clipboard. Outside the text editor, `m` toggles this
+mouse handling on or off.
 
 The broker must be running. Agents use the existing persistent MCP server and its
 `read_board` and `update_board` tools. There is no extra server or binary.
@@ -35,6 +38,31 @@ The current document is stored as `boards/main.md` inside that private state
 directory. A read of a missing document returns empty Markdown and its revision;
 the first successful update creates it. Backups of the broker's state include the
 board. Print its exact Markdown once with `agent-bridge board --raw`.
+
+## Copy text
+
+Press the left mouse button in the rendered document, drag across the text, and
+release to copy the highlighted selection. A click without a drag does not copy
+or change your clipboard. Selection copies visible text, including displayed
+line breaks and any selected table borders, rather than the raw Markdown source.
+It does not edit the document or notify board subscribers.
+
+The displayed document stays fixed during a drag so agents' updates cannot change
+what you are selecting. The live view resumes when you release or cancel the
+selection. Escape cancels a selection; scrolling, navigation or resizing also
+cancels it. Mouse selection applies to the rendered document, not the Responses
+pane or draft editor. Selections are limited to 64 KiB and are never silently
+truncated.
+
+Copy uses the terminal's [OSC 52 clipboard support](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html),
+which may need to be allowed in your terminal or terminal multiplexer. The board
+sends clipboard data without reading the clipboard, and displays “Copy sent to
+terminal” because the protocol does not acknowledge whether it was accepted.
+
+If your terminal blocks clipboard requests, press `m` outside the text editor to
+return mouse selection to the terminal and use its normal copy command. Many
+terminals also provide Shift-drag to bypass application mouse handling; that
+shortcut depends on the terminal.
 
 ## Answer questions in the terminal
 
