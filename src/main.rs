@@ -24,7 +24,7 @@ struct Cli {
 enum Commands {
     /// Expose structured agent tools over a persistent local MCP stdio connection.
     Mcp,
-    /// Watch the local shared Markdown board, or print its current Markdown.
+    /// View and answer local shared Markdown board controls, or print its current Markdown.
     Board {
         /// Print Markdown once without opening the terminal UI.
         #[arg(long)]

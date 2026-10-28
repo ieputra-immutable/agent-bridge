@@ -119,9 +119,9 @@ pub async fn deliver_with_machines(
     deliver_content(agent, msg, &content).await
 }
 
-/// Locally generated, typed pairing controls use the native transport without
+/// Locally generated, typed controls use the native transport without
 /// pretending to be an ordinary user or remote agent message.
-pub(crate) async fn deliver_pairing_notice(
+pub(crate) async fn deliver_control_notice(
     agent: &Agent,
     msg: &Message,
     _state_dir: &Path,

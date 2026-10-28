@@ -1,7 +1,15 @@
-//! A read-only, local Markdown view. Board content defines its own schema.
-use crate::{board::Snapshot, broker, protocol::Request};
+//! A live Markdown view with revision-checked checkbox and text-field editing.
+use crate::{
+    board::{Edit, MAX_BOARD_BYTES, Snapshot},
+    board_interaction::{self, Control, Kind},
+    broker,
+    protocol::Request,
+};
 use anyhow::{Context, Result, ensure};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers,
+};
 use futures::StreamExt;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::{
@@ -27,6 +35,7 @@ const MAX_TABLE_CELLS: usize = 20_000;
 struct TerminalRestore;
 impl Drop for TerminalRestore {
     fn drop(&mut self) {
+        let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
         ratatui::restore();
     }
 }
@@ -103,6 +112,107 @@ fn rendered_markdown(markdown: &str, width: u16) -> (Text<'static>, bool) {
     (owned, plain)
 }
 
+#[derive(Clone)]
+struct Save {
+    base: Snapshot,
+    markdown: String,
+    text: bool,
+}
+struct Editor {
+    base: Snapshot,
+    control: Control,
+    draft: String,
+    cursor: usize,
+}
+impl Editor {
+    fn key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up => self.move_row(false),
+            KeyCode::Down => self.move_row(true),
+            KeyCode::Left => {
+                self.cursor = self.draft[..self.cursor]
+                    .char_indices()
+                    .last()
+                    .map_or(0, |(i, _)| i)
+            }
+            KeyCode::Right => {
+                self.cursor += self.draft[self.cursor..]
+                    .chars()
+                    .next()
+                    .map_or(0, char::len_utf8)
+            }
+            KeyCode::Home => {
+                self.cursor = self.draft[..self.cursor].rfind('\n').map_or(0, |i| i + 1)
+            }
+            KeyCode::End => {
+                self.cursor += self.draft[self.cursor..]
+                    .find('\n')
+                    .unwrap_or(self.draft.len() - self.cursor)
+            }
+            KeyCode::Backspace if self.cursor > 0 => {
+                let previous = self.draft[..self.cursor]
+                    .char_indices()
+                    .last()
+                    .map_or(0, |(i, _)| i);
+                self.draft.replace_range(previous..self.cursor, "");
+                self.cursor = previous;
+            }
+            KeyCode::Delete if self.cursor < self.draft.len() => {
+                let next =
+                    self.cursor + self.draft[self.cursor..].chars().next().unwrap().len_utf8();
+                self.draft.replace_range(self.cursor..next, "");
+            }
+            KeyCode::Char(ch)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && !ch.is_control() =>
+            {
+                self.insert(&ch.to_string())
+            }
+            KeyCode::Enter => self.insert("\n"),
+            _ => (),
+        }
+    }
+    fn move_row(&mut self, down: bool) {
+        let line_start = self.draft[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.cursor
+            + self.draft[self.cursor..]
+                .find('\n')
+                .unwrap_or(self.draft.len() - self.cursor);
+        let column = self.draft[line_start..self.cursor].chars().count();
+        let target = if down {
+            if line_end == self.draft.len() {
+                return;
+            }
+            let start = line_end + 1;
+            let end = start
+                + self.draft[start..]
+                    .find('\n')
+                    .unwrap_or(self.draft.len() - start);
+            start..end
+        } else {
+            if line_start == 0 {
+                return;
+            }
+            let end = line_start - 1;
+            let start = self.draft[..end].rfind('\n').map_or(0, |i| i + 1);
+            start..end
+        };
+        self.cursor = target.start
+            + self.draft[target.clone()]
+                .char_indices()
+                .nth(column)
+                .map_or(target.len(), |(i, _)| i);
+    }
+    fn insert(&mut self, text: &str) {
+        if self.draft.len() + text.len() <= MAX_BOARD_BYTES {
+            self.draft.insert_str(self.cursor, text);
+            self.cursor += text.len();
+        }
+    }
+}
+
 struct View {
     snapshot: Option<Snapshot>,
     error: Option<String>,
@@ -112,6 +222,12 @@ struct View {
     max_scroll: (u16, u16),
     wrap: bool,
     plain: bool,
+    controls: Vec<Control>,
+    selected: Option<usize>,
+    editor: Option<Editor>,
+    pending: Option<Save>,
+    saving: bool,
+    notice: Option<String>,
 }
 impl Default for View {
     fn default() -> Self {
@@ -124,6 +240,12 @@ impl Default for View {
             max_scroll: (0, 0),
             wrap: true,
             plain: false,
+            controls: Vec::new(),
+            selected: None,
+            editor: None,
+            pending: None,
+            saving: false,
+            notice: None,
         }
     }
 }
@@ -133,6 +255,17 @@ impl View {
             Ok(snapshot) => {
                 if self.snapshot.as_ref().map(|old| &old.revision) != Some(&snapshot.revision) {
                     self.width = 0;
+                    self.controls = board_interaction::controls(&snapshot.markdown);
+                    // Source positions are only valid for the snapshot selected.
+                    // Insertion/reordering must never silently retarget a response.
+                    self.selected = None;
+                    if self
+                        .editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.base.revision != snapshot.revision)
+                    {
+                        self.notice = Some("Board changed; draft retained. Review latest board; Ctrl-R rebases unchanged field before saving.".into());
+                    }
                 }
                 self.snapshot = Some(snapshot);
                 self.error = None;
@@ -149,9 +282,17 @@ impl View {
         }
     }
     fn draw(&mut self, frame: &mut Frame<'_>) {
-        let [header, body, footer] = Layout::vertical([
+        let response_height = if self.editor.is_some() {
+            9
+        } else if self.controls.is_empty() {
+            0
+        } else {
+            5
+        };
+        let [header, body, responses, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(0),
+            Constraint::Length(response_height),
             Constraint::Length(2),
         ])
         .areas(frame.area());
@@ -207,8 +348,81 @@ impl View {
         self.scroll.1 = self.scroll.1.min(self.max_scroll.1);
         frame.render_widget(block, body);
         frame.render_widget(self.paragraph().scroll(self.scroll), inner);
-        let status = if let Some(error) = &self.error {
-            format!("Offline/stale: {error} · retrying")
+        if let Some(editor) = &self.editor {
+            let title = format!(
+                "Text response: {} · Ctrl-S save · Esc cancel · Ctrl-R review/rebase",
+                safe_line(&editor.control.label)
+            );
+            let block = Block::bordered().title(title);
+            let inner = block.inner(responses);
+            let before = safe_markdown(&editor.draft[..editor.cursor]);
+            let after = safe_markdown(&editor.draft[editor.cursor..]);
+            let content = format!("{before}▏{after}");
+            let cursor_line = Paragraph::new(format!("{before}▏"))
+                .wrap(Wrap { trim: false })
+                .line_count(inner.width);
+            let scroll = cursor_line
+                .saturating_sub(usize::from(inner.height))
+                .min(u16::MAX as usize) as u16;
+            frame.render_widget(block, responses);
+            frame.render_widget(
+                Paragraph::new(content)
+                    .wrap(Wrap { trim: false })
+                    .scroll((scroll, 0)),
+                inner,
+            );
+        } else if !self.controls.is_empty() {
+            let title = format!(
+                "Responses · Tab/Shift-Tab select · Space checkbox · Enter text · {} controls",
+                self.controls.len()
+            );
+            let block = Block::bordered().title(title);
+            let inner = block.inner(responses);
+            let selected = self.selected.unwrap_or(0);
+            let first = selected.saturating_sub(1);
+            let lines = self
+                .controls
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(usize::from(inner.height))
+                .map(|(index, control)| {
+                    let marker = match &control.kind {
+                        Kind::Checkbox { checked } => {
+                            if *checked {
+                                "[x]"
+                            } else {
+                                "[ ]"
+                            }
+                        }
+                        Kind::Text { .. } => "[text]",
+                    };
+                    let focused = self.selected == Some(index);
+                    let line = Line::from(format!(
+                        "{} line {} {marker} {}",
+                        if focused { "▶" } else { " " },
+                        control.line,
+                        safe_line(&control.label)
+                    ));
+                    if focused {
+                        line.style(Style::default().fg(Color::Yellow))
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>();
+            frame.render_widget(block, responses);
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+        let status = if self.saving {
+            "Saving response…".into()
+        } else if let Some(error) = &self.error {
+            format!(
+                "Offline/stale: {error} · retrying · {}",
+                self.notice.as_deref().unwrap_or("")
+            )
+        } else if let Some(notice) = &self.notice {
+            safe_line(notice)
         } else if self.snapshot.is_none() {
             "Connecting to the local broker…".into()
         } else if self.plain {
@@ -227,12 +441,36 @@ impl View {
             )
         };
         frame.render_widget(Paragraph::new(vec![
-            Line::from(status),
-            Line::from("q/Esc quit · j/k or arrows scroll · PgUp/PgDn · Home/End · h/l pan · w wrap · r refresh"),
+            Line::from(safe_line(&status)),
+            Line::from(if self.editor.is_some() { "Enter newline · arrows edit · PgUp/PgDn board · Ctrl-S save · Esc cancel · Ctrl-C quit" } else { "q/Esc quit · j/k scroll · Tab responses · Space toggle · Enter edit · PgUp/PgDn · w wrap · r refresh" }),
         ]), footer);
     }
     fn key(&mut self, key: KeyEvent, page: u16) -> bool {
         if key.kind == KeyEventKind::Release {
+            return false;
+        }
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return true;
+        }
+        if self.editor.is_some() {
+            if self.saving {
+                return false;
+            }
+            match key.code {
+                KeyCode::PageUp => self.scroll.0 = self.scroll.0.saturating_sub(page.max(1)),
+                KeyCode::PageDown => self.scroll.0 = self.scroll.0.saturating_add(page.max(1)),
+                KeyCode::Esc => {
+                    self.editor = None;
+                    self.notice = Some("Draft cancelled; board unchanged.".into());
+                }
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.prepare_save()
+                }
+                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.rebase_editor()
+                }
+                _ => self.editor.as_mut().unwrap().key(key),
+            }
             return false;
         }
         if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
@@ -241,6 +479,32 @@ impl View {
             return true;
         }
         match key.code {
+            KeyCode::Tab | KeyCode::BackTab if !self.controls.is_empty() && !self.saving => {
+                let backwards =
+                    key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT);
+                self.selected = Some(match (self.selected, backwards) {
+                    (Some(0), true) | (None, true) => self.controls.len() - 1,
+                    (Some(index), true) => index - 1,
+                    (Some(index), false) => (index + 1) % self.controls.len(),
+                    (None, false) => 0,
+                });
+                self.notice = None;
+            }
+            KeyCode::Char(' ') if !self.saving => self.toggle(),
+            KeyCode::Enter if !self.saving => {
+                if let (Some(index), Some(base)) = (self.selected, self.snapshot.as_ref()) {
+                    let control = self.controls[index].clone();
+                    if let Kind::Text { value, .. } = &control.kind {
+                        self.editor = Some(Editor {
+                            base: base.clone(),
+                            draft: value.clone(),
+                            cursor: value.len(),
+                            control,
+                        });
+                        self.notice = None;
+                    }
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') => self.scroll.0 = self.scroll.0.saturating_add(1),
             KeyCode::Up | KeyCode::Char('k') => self.scroll.0 = self.scroll.0.saturating_sub(1),
             KeyCode::PageDown => self.scroll.0 = self.scroll.0.saturating_add(page.max(1)),
@@ -259,6 +523,105 @@ impl View {
             _ => (),
         }
         false
+    }
+    fn paste(&mut self, input: &str) {
+        if self.saving {
+            return;
+        }
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+        let text = normalized
+            .chars()
+            .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+            .collect::<String>();
+        if editor.draft.len().saturating_add(text.len()) > MAX_BOARD_BYTES {
+            self.notice = Some("Paste exceeds 64 KiB; draft unchanged.".into());
+        } else {
+            editor.insert(&text);
+        }
+    }
+    fn toggle(&mut self) {
+        if let (Some(index), Some(base)) = (self.selected, self.snapshot.as_ref())
+            && matches!(self.controls[index].kind, Kind::Checkbox { .. })
+        {
+            match self.controls[index].replacement(&base.markdown, None) {
+                Ok(markdown) => {
+                    self.pending = Some(Save {
+                        base: base.clone(),
+                        markdown,
+                        text: false,
+                    })
+                }
+                Err(error) => self.notice = Some(format!("Cannot toggle: {error:#}")),
+            }
+        }
+    }
+    fn prepare_save(&mut self) {
+        let Some(editor) = &self.editor else {
+            return;
+        };
+        if self
+            .snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.revision != editor.base.revision)
+        {
+            self.notice = Some("Board changed; draft retained. Review latest board; Ctrl-R rebases an unchanged field.".into());
+            return;
+        }
+        match editor
+            .control
+            .replacement(&editor.base.markdown, Some(&editor.draft))
+        {
+            Ok(markdown) => {
+                self.pending = Some(Save {
+                    base: editor.base.clone(),
+                    markdown,
+                    text: true,
+                })
+            }
+            Err(error) => self.notice = Some(format!("Cannot save: {error:#}")),
+        }
+    }
+    fn rebase_editor(&mut self) {
+        let (Some(editor), Some(snapshot)) = (&mut self.editor, &self.snapshot) else {
+            return;
+        };
+        let Kind::Text { id, value, .. } = &editor.control.kind else {
+            return;
+        };
+        let current = self.controls.iter().find(|control| matches!(&control.kind, Kind::Text { id: other, value: latest, .. } if other == id && latest == value));
+        if let Some(control) = current {
+            editor.base = snapshot.clone();
+            editor.control = control.clone();
+            self.notice = Some(
+                "Draft rebased. Review the latest question on the board before Ctrl-S.".into(),
+            );
+        } else {
+            self.notice = Some("Field changed or disappeared; draft retained and cannot overwrite it. Esc cancels.".into());
+        }
+    }
+    fn saved(&mut self, save: Save, result: Result<(Snapshot, bool)>) {
+        self.saving = false;
+        match result {
+            Ok((snapshot, applied)) => {
+                self.update(Ok(snapshot));
+                if applied {
+                    if save.text {
+                        self.editor = None;
+                    }
+                    self.notice = Some("Response saved to Markdown.".into());
+                } else {
+                    self.notice = Some(if save.text { "Save conflict; draft retained. Review board; Ctrl-R rebases an unchanged field." } else { "Board changed; checkbox was not toggled. Review and select it again." }.into());
+                }
+            }
+            Err(error) => {
+                self.notice = Some(format!(
+                    "Save result uncertain: {error:#}. Refresh and inspect the board before retrying; draft retained."
+                ));
+            }
+        }
     }
 }
 
@@ -306,19 +669,45 @@ pub async fn run(state_dir: PathBuf) -> Result<()> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let _restore = TerminalRestore;
     let mut terminal = ratatui::try_init().context("Cannot initialize the board terminal")?;
+    crossterm::execute!(std::io::stdout(), EnableBracketedPaste)
+        .context("Cannot enable safe terminal paste")?;
     let mut events = EventStream::new();
     let (refresh, mut requests) = mpsc::channel(1);
+    let (writes, mut write_requests) = mpsc::channel::<Save>(1);
+    enum Update {
+        Read(Result<Snapshot>),
+        Saved(Save, Result<(Snapshot, bool)>),
+    }
     let (updates, mut results) = mpsc::channel(1);
     let state = state_dir.clone();
     let worker = tokio::spawn(async move {
-        while requests.recv().await.is_some() {
-            let result = async {
-                let value = broker::rpc(&state, &Request::BoardRead).await?;
-                serde_json::from_value::<Snapshot>(value)
-                    .context("Invalid board snapshot from broker")
-            }
-            .await;
-            if updates.send(result).await.is_err() {
+        loop {
+            let update = tokio::select! {
+                biased;
+                save = write_requests.recv() => {
+                    let Some(save) = save else { break; };
+                    let result = async {
+                        let value = broker::rpc(&state, &Request::BoardUpdate {
+                            expected_revision: save.base.revision.clone(),
+                            edits: vec![Edit::Set { markdown: save.markdown.clone() }],
+                            actor: None,
+                        }).await?;
+                        let applied = value["applied"].as_bool().context("Invalid save response from broker")?;
+                        let snapshot = serde_json::from_value::<Snapshot>(value["board"].clone()).context("Invalid saved board snapshot")?;
+                        Ok((snapshot, applied))
+                    }.await;
+                    Update::Saved(save, result)
+                }
+                request = requests.recv() => {
+                    if request.is_none() { break; }
+                    let result = async {
+                        let value = broker::rpc(&state, &Request::BoardRead).await?;
+                        serde_json::from_value::<Snapshot>(value).context("Invalid board snapshot from broker")
+                    }.await;
+                    Update::Read(result)
+                }
+            };
+            if updates.send(update).await.is_err() {
                 break;
             }
         }
@@ -341,9 +730,13 @@ pub async fn run(state_dir: PathBuf) -> Result<()> {
             event = events.next() => match event {
                 Some(Ok(Event::Key(key))) => {
                     if view.key(key, terminal.size()?.height.saturating_sub(4)) { break; }
-                    if key.code == KeyCode::Char('r') { let _ = refresh.try_send(()); }
+                    if key.code == KeyCode::Char('r') && view.editor.is_none() { let _ = refresh.try_send(()); }
+                    if let Some(save) = view.pending.take() {
+                        if writes.try_send(save).is_ok() { view.saving = true; } else { view.notice = Some("Another save is pending; draft retained.".into()); }
+                    }
                     dirty = true;
                 }
+                Some(Ok(Event::Paste(text))) => { view.paste(&text); dirty = true; }
                 Some(Ok(Event::Resize(..))) => dirty = true,
                 Some(Ok(_)) => (),
                 Some(Err(error)) => return Err(error).context("Cannot read terminal input"),
@@ -352,7 +745,8 @@ pub async fn run(state_dir: PathBuf) -> Result<()> {
             _ = fallback.tick() => { let _ = refresh.try_send(()); },
             update = results.recv() => {
                 let Some(update) = update else { anyhow::bail!("Board refresh worker stopped"); };
-                if let Ok(snapshot) = &update {
+                let snapshot = match &update { Update::Read(Ok(snapshot)) | Update::Saved(_, Ok((snapshot, _))) => Some(snapshot), _ => None };
+                if let Some(snapshot) = snapshot {
                     let root = snapshot.path.parent().filter(|parent| parent.is_dir()).unwrap_or(&state_dir);
                     if watch.as_ref().is_none_or(|watch| watch.root != root) {
                         // Watching is an optimization; the bounded periodic refresh also
@@ -360,7 +754,10 @@ pub async fn run(state_dir: PathBuf) -> Result<()> {
                         watch = file_watch(&snapshot.path, &state_dir, refresh.clone()).ok();
                     }
                 }
-                view.update(update);
+                match update {
+                    Update::Read(result) => view.update(result),
+                    Update::Saved(save, result) => view.saved(save, result),
+                }
                 dirty = true;
             }
         }
@@ -469,6 +866,126 @@ mod tests {
         let unrelated = notify::Event::new(notify::EventKind::Modify(ModifyKind::Any))
             .add_path(PathBuf::from("/private/messages.sqlite3"));
         assert!(!board_event(&unrelated, board, parent));
+    }
+
+    fn press(view: &mut View, code: KeyCode, modifiers: KeyModifiers) {
+        assert!(!view.key(KeyEvent::new(code, modifiers), 5));
+    }
+    fn field(value: &str) -> String {
+        format!("# Question\n\n<!-- board-input: notes -->\n> {value}\n<!-- /board-input -->\n")
+    }
+    #[test]
+    fn controls_toggle_exact_snapshot_and_refresh_clears_focus() {
+        let source = "# Review\n\n- [ ] same\n- [ ] same\n";
+        let mut view = View::default();
+        view.update(Ok(snapshot(source, "one")));
+        press(&mut view, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Char(' '), KeyModifiers::NONE);
+        let save = view.pending.take().unwrap();
+        assert_eq!(save.base.revision, "one");
+        assert_eq!(save.markdown, "# Review\n\n- [ ] same\n- [x] same\n");
+        view.update(Ok(snapshot(
+            "# Different question\n\n- [ ] inserted\n- [ ] same\n",
+            "two",
+        )));
+        assert!(view.selected.is_none());
+        press(&mut view, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(
+            view.pending.is_none(),
+            "old focus must not target a changed question"
+        );
+        press(&mut view, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(view.selected, Some(1));
+    }
+    #[test]
+    fn unicode_editor_pins_revision_and_retains_draft_on_conflict() {
+        let mut view = View::default();
+        view.update(Ok(snapshot(&field("地球"), "one")));
+        press(&mut view, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Backspace, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Char('海'), KeyModifiers::NONE);
+        press(&mut view, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Char('q'), KeyModifiers::NONE);
+        press(&mut view, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        let save = view.pending.take().unwrap();
+        assert!(save.markdown.contains("> 地海\n> q\n"));
+        let latest = format!("New context\n{}", field("地球"));
+        view.saved(save, Ok((snapshot(&latest, "two"), false)));
+        assert_eq!(view.editor.as_ref().unwrap().draft, "地海\nq");
+        assert_eq!(view.editor.as_ref().unwrap().base.revision, "one");
+        press(&mut view, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(view.pending.is_none());
+        press(&mut view, KeyCode::PageDown, KeyModifiers::NONE);
+        assert_eq!(
+            view.scroll.0, 5,
+            "latest question remains scrollable while editing"
+        );
+        press(&mut view, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(view.editor.as_ref().unwrap().base.revision, "two");
+        press(&mut view, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        let save = view.pending.take().unwrap();
+        assert!(save.markdown.starts_with("New context\n"));
+        assert_eq!(save.base.revision, "two");
+    }
+    #[test]
+    fn concurrent_response_cannot_be_overwritten_by_rebasing_a_draft() {
+        let mut view = View::default();
+        view.update(Ok(snapshot(&field("original"), "one")));
+        press(&mut view, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Enter, KeyModifiers::NONE);
+        view.paste(" my draft");
+        view.update(Ok(snapshot(&field("someone else's response"), "two")));
+        press(&mut view, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(view.editor.as_ref().unwrap().base.revision, "one");
+        assert_eq!(view.editor.as_ref().unwrap().draft, "original my draft");
+        press(&mut view, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(view.pending.is_none());
+        press(&mut view, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(view.editor.is_none());
+        assert_eq!(
+            view.snapshot.as_ref().unwrap().markdown,
+            field("someone else's response")
+        );
+    }
+    #[test]
+    fn paste_is_literal_bounded_text_and_never_save_or_cancel_commands() {
+        let mut view = View::default();
+        view.update(Ok(snapshot(&field(""), "one")));
+        press(&mut view, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Enter, KeyModifiers::NONE);
+        view.paste("yes\r\n\u{13}\u{1b}q 🌍");
+        assert_eq!(view.editor.as_ref().unwrap().draft, "yes\nq 🌍");
+        assert!(view.pending.is_none());
+        view.paste(&"x".repeat(MAX_BOARD_BYTES));
+        assert_eq!(view.editor.as_ref().unwrap().draft, "yes\nq 🌍");
+        press(&mut view, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(view.editor.as_ref().unwrap().cursor, 3);
+        press(&mut view, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(view.editor.as_ref().unwrap().cursor, 0);
+        press(&mut view, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(view.editor.as_ref().unwrap().cursor, 4);
+    }
+    #[test]
+    fn long_wrapped_draft_keeps_cursor_visible_and_outage_status_wins() {
+        let mut view = View::default();
+        view.update(Ok(snapshot(&field(""), "one")));
+        press(&mut view, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut view, KeyCode::Enter, KeyModifiers::NONE);
+        view.paste(&format!("{}CURSOR_END", "long ".repeat(100)));
+        let mut terminal = Terminal::new(TestBackend::new(30, 20)).unwrap();
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        assert!(buffer_text(&terminal).contains('▏'));
+        view.notice = Some("Response saved\u{1b}]0;unsafe\u{7}".into());
+        view.update(Err(anyhow::anyhow!("offline")));
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        assert!(buffer_text(&terminal).contains("Offline/stale"));
+        assert!(!buffer_text(&terminal).chars().any(char::is_control));
+        terminal
+            .resize(ratatui::layout::Rect::new(0, 0, 1, 1))
+            .unwrap();
+        terminal.draw(|frame| view.draw(frame)).unwrap();
     }
 
     #[test]

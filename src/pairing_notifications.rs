@@ -324,7 +324,7 @@ pub(crate) async fn run(broker: Broker) -> Result<()> {
                 updated: now,
             };
             let outcome =
-                delivery::deliver_pairing_notice(&notice.agent, &message, &broker.state_dir, &text)
+                delivery::deliver_control_notice(&notice.agent, &message, &broker.state_dir, &text)
                     .await;
             if outcome.state != "submitted" {
                 eprintln!(

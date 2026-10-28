@@ -54,6 +54,7 @@ for client scopes and approvals.
 | Tool | Purpose |
 | --- | --- |
 | `read_board`, `update_board` | Read and atomically edit the local shared Markdown board with revision checks. |
+| `subscribe_board`, `unsubscribe_board` | Opt an exact local native session into or out of debounced board change notifications. |
 | `connection_status` | Inspect the local broker and peer connections. |
 | `list_agents` | List local sessions by default, or one explicitly selected peer's permitted sessions. |
 | `list_messages`, `get_message` | Inspect message history and delivery state. |
@@ -70,6 +71,12 @@ agent explicitly for sending, acknowledging, session sharing and pairing notices
 a server shared by several conversations must not guess which session owns a call.
 Local registration names are available through `list_agents` or native registration
 context. Pairing alone still shares no sessions.
+
+Board subscriptions are off by default and end with the selected session or a
+broker restart. Agents can use them to notice checkbox and text answers entered
+in the TUI. Supply your own registered `agent` when calling `update_board` to
+suppress notifications of your own writes. See [interactive board usage](board.md)
+for the text-field syntax, debounce timing and concurrency behavior.
 
 ### Discover and share your session
 

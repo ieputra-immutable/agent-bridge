@@ -75,6 +75,9 @@ sessions remain private by default.
 ## Local shared Markdown board
 
 One content-agnostic Markdown document is shared through local broker RPC and
-revision-checked MCP edits. A read-only terminal viewer renders it live. Storage,
+revision-checked MCP edits. A live terminal interface supports Markdown task
+checkboxes and marked free-form text responses. Local native sessions can opt in
+to change notifications with a 3-second debounce and 10-second coalescing cap;
+subscriptions expire with session lifecycle or broker restart. Storage,
 editing and rendering are separated for later board/source selection; this
 version does not synchronize boards between machines. See [shared board](board.md).

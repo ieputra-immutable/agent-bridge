@@ -97,6 +97,14 @@ pub enum Request {
     BoardUpdate {
         expected_revision: String,
         edits: Vec<crate::board::Edit>,
+        #[serde(default)]
+        actor: Option<String>,
+    },
+    BoardSubscribe {
+        agent: String,
+    },
+    BoardUnsubscribe {
+        agent: String,
     },
     Status,
     MonitorEnable {

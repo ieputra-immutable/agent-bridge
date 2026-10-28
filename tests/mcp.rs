@@ -54,6 +54,7 @@ impl Drop for Running {
 struct Native {
     name: String,
     session: String,
+    received: tokio::sync::mpsc::Receiver<Value>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Native {
@@ -74,6 +75,7 @@ impl Native {
             },
             replace: false,
         });
+        let (captured, received) = tokio::sync::mpsc::channel(32);
         let task = tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
@@ -89,11 +91,13 @@ impl Native {
                 .unwrap();
                 let frame: Value = serde_json::from_slice(&bytes).unwrap();
                 assert_eq!(frame["type"], "user");
+                let _ = captured.try_send(frame);
             }
         });
         Self {
             name: name.into(),
             session,
+            received,
             task,
         }
     }
@@ -717,6 +721,159 @@ async fn two_mcp_clients_pair_real_brokers_only_after_both_owners_approve_then_s
     .expect("unshared session remained in the permitted remote directory");
     a_mcp.close().await;
     b_mcp.close().await;
+}
+
+#[tokio::test]
+async fn board_subscriptions_deliver_debounced_native_notices_only_when_opted_in() {
+    let root = root();
+    let state = root.path().join("state");
+    let running = Running::start(&state);
+    let mut native = Native::start(&running, &root.path().join("native"), "board-owner");
+    running.inbox("not-native");
+    let mut mcp = Mcp::start(&state);
+    mcp.initialize().await;
+    let tools = mcp.request("tools/list", json!({})).await;
+    for name in ["subscribe_board", "unsubscribe_board"] {
+        assert!(
+            tools["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == name)
+        );
+    }
+    for arguments in [
+        json!({}),
+        json!({"agent":"missing"}),
+        json!({"agent":"not-native"}),
+        json!({"agent":native.name,"peer":"remote"}),
+    ] {
+        let response = mcp.call("subscribe_board", arguments).await;
+        assert!(failed(&response), "{response}");
+    }
+    let snapshot = mcp.call("read_board", json!({})).await;
+    let revision = structured(&snapshot)["result"]["revision"].clone();
+    let initialized = mcp
+        .call(
+            "update_board",
+            json!({"expected_revision":revision,"edits":[{"op":"set","markdown":"# Board\n"}]}),
+        )
+        .await;
+    assert!(!failed(&initialized), "{initialized}");
+    let revision = structured(&initialized)["result"]["board"]["revision"].clone();
+    for _ in 0..2 {
+        let subscribed = mcp
+            .call("subscribe_board", json!({"agent":native.name}))
+            .await;
+        assert!(!failed(&subscribed), "{subscribed}");
+    }
+    // No historical notification on subscribe and no wakeup from this session's
+    // own attributed edits. This also checks that the polling worker does not
+    // reinterpret a known own-write as an external file edit.
+    let own = mcp.call("update_board", json!({"agent":native.name,"expected_revision":revision,"edits":[{"op":"append","text":"Own update\n"}]})).await;
+    assert!(!failed(&own), "{own}");
+    assert!(
+        timeout(Duration::from_millis(3700), native.received.recv())
+            .await
+            .is_err()
+    );
+    let revision = structured(&own)["result"]["board"]["revision"].clone();
+    // Invalid attribution must not apply an otherwise valid edit.
+    let invalid = mcp.call("update_board", json!({"agent":"missing","expected_revision":revision,"edits":[{"op":"append","text":"must not apply"}]})).await;
+    assert!(failed(&invalid), "{invalid}");
+    let unchanged = mcp.call("read_board", json!({})).await;
+    assert_eq!(structured(&unchanged)["result"]["revision"], revision);
+    let first = mcp.call("update_board", json!({"expected_revision":revision,"edits":[{"op":"append","text":"Unattributed first\n"}]})).await;
+    assert!(!failed(&first), "{first}");
+    let revision = structured(&first)["result"]["board"]["revision"].clone();
+    let second = mcp.call("update_board", json!({"expected_revision":revision,"edits":[{"op":"append","text":"PRIVATE_MARKDOWN_NEVER_IN_NOTICE\n"}]})).await;
+    assert!(!failed(&second), "{second}");
+    let revision = structured(&second)["result"]["board"]["revision"].clone();
+    // A subsequent own-write must neither erase pending external work nor
+    // extend its debounce. The notice points at the newest readable revision.
+    let own = mcp.call("update_board", json!({"agent":native.name,"expected_revision":revision,"edits":[{"op":"append","text":"Own follow-up\n"}]})).await;
+    assert!(!failed(&own), "{own}");
+    let revision = structured(&own)["result"]["board"]["revision"]
+        .as_str()
+        .unwrap();
+    assert!(
+        timeout(Duration::from_millis(2200), native.received.recv())
+            .await
+            .is_err()
+    );
+    let notice = timeout(Duration::from_secs(4), native.received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let content = notice["message"]["content"].as_str().unwrap();
+    assert!(content.contains("board"), "{notice}");
+    assert!(content.contains(revision), "{notice}");
+    assert!(content.contains("not user approval"), "{notice}");
+    assert!(!content.contains("PRIVATE_MARKDOWN_NEVER_IN_NOTICE"));
+    assert_eq!(notice["session_id"], native.session);
+    assert_eq!(
+        running.request(Request::History {
+            agent: None,
+            limit: 100
+        }),
+        json!([])
+    );
+
+    // An actual direct file change is detected even without a broker edit.
+    let current = mcp.call("read_board", json!({})).await;
+    let current = &structured(&current)["result"];
+    std::fs::write(
+        current["path"].as_str().unwrap(),
+        format!("{}External editor\n", current["markdown"].as_str().unwrap()),
+    )
+    .unwrap();
+    let external = timeout(Duration::from_secs(6), native.received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        external["message"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("not user approval")
+    );
+    assert!(
+        native.received.try_recv().is_err(),
+        "one notice per coalesced burst"
+    );
+
+    let current = mcp.call("read_board", json!({})).await;
+    let revision = structured(&current)["result"]["revision"].clone();
+    let pending = mcp.call("update_board", json!({"expected_revision":revision,"edits":[{"op":"append","text":"Cancelled pending notification\n"}]})).await;
+    assert!(!failed(&pending), "{pending}");
+    let unsubscribed = mcp
+        .call("unsubscribe_board", json!({"agent":native.name}))
+        .await;
+    assert!(!failed(&unsubscribed), "{unsubscribed}");
+    assert!(
+        timeout(Duration::from_millis(3700), native.received.recv())
+            .await
+            .is_err()
+    );
+
+    let subscribed = mcp
+        .call("subscribe_board", json!({"agent":native.name}))
+        .await;
+    assert!(!failed(&subscribed), "{subscribed}");
+    drop(running);
+    // Aborting the serve task drops its state lock at the next scheduler turn.
+    tokio::task::yield_now().await;
+    let _restarted = Running::start(&state);
+    let current = mcp.call("read_board", json!({})).await;
+    let revision = structured(&current)["result"]["revision"].clone();
+    let after_restart = mcp.call("update_board", json!({"expected_revision":revision,"edits":[{"op":"append","text":"Private after restart\n"}]})).await;
+    assert!(!failed(&after_restart), "{after_restart}");
+    assert!(
+        timeout(Duration::from_millis(3700), native.received.recv())
+            .await
+            .is_err()
+    );
+    mcp.close().await;
 }
 
 #[tokio::test]

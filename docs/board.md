@@ -13,6 +13,8 @@ agent-bridge board
 
 Use `j`/`k` or arrow keys to scroll, Page Up/Down and Home/End to navigate,
 `h`/`l` to pan horizontally, `w` to toggle wrapping, and `r` to refresh.
+Use Tab/Shift-Tab to select a checkbox or text field in the Responses pane.
+Space toggles the selected checkbox; Enter opens the selected text field.
 Quit with `q`, Escape or Ctrl-C. File changes refresh the view automatically;
 a brief broker outage keeps the last content visible and shows a retry status.
 Extremely complex tables fall back to readable plain Markdown to bound rendering
@@ -31,6 +33,82 @@ The current document is stored as `boards/main.md` inside that private state
 directory. A read of a missing document returns empty Markdown and its revision;
 the first successful update creates it. Backups of the broker's state include the
 board. Print its exact Markdown once with `agent-bridge board --raw`.
+
+## Answer questions in the terminal
+
+Agents can put standard task checkboxes and marked text fields anywhere in the
+document. For example:
+
+```markdown
+## Urgent
+
+- [ ] Approve merging PR #25
+- [ ] Leave PR #25 open
+
+Any instructions before merging?
+<!-- board-input: merge-notes -->
+>
+<!-- /board-input -->
+```
+
+Checkboxes are independent toggles, not a mutually exclusive selector. Give them
+clear labels so the user can distinguish questions. Code examples and ordinary
+`[ ]` text are not interactive. The Responses pane shows each control's source
+line, label and current state; the rest of the board remains rendered Markdown.
+
+Text fields use standalone opening/closing comments and blockquoted response
+lines. Choose a unique ID of 1–80 ASCII letters, digits, hyphens, underscores or
+periods. Duplicate, nested, unclosed or malformed fields are not editable. Text
+inside a field is response content, including anything resembling a checkbox or
+marker; it does not create more controls.
+
+In the text editor, type or paste a response. Enter adds a newline; arrow keys,
+Home/End, Backspace and Delete edit the text. Ctrl-S saves and Escape cancels the
+draft. Page Up/Down scrolls the main board so you can review the surrounding
+question. Ctrl-C exits. Saving writes each response line back as `> response`,
+preserving the rest of the document. Closing the terminal does not save a draft.
+
+Answers use the same revision-checked broker updates as agents. A board refresh
+clears checkbox selection so reordered questions cannot silently receive a click
+intended for an older version. If the board changes during text entry, the draft
+is retained but cannot save over the newer revision. Review the current board,
+then use Ctrl-R to explicitly rebase an unchanged uniquely named field before
+saving. If that field changed or disappeared, cancel and reopen the intended
+field. An uncertain save is not automatically retried; check the board first.
+
+The agent reads the resulting Markdown and interprets the response under the
+user's instructions. Agent Bridge does not execute a checked item or treat it as
+authenticated approval: agents can also edit this shared document.
+
+## Subscribe to changes
+
+Notifications are off by default. An enabled local Codex or Claude session can
+opt in with the `subscribe_board` MCP tool, selecting its exact registration:
+
+```json
+{"agent":"codex-<this-session-UUID>"}
+```
+
+Use the real registration name supplied in the session's native context. The
+`unsubscribe_board` tool takes the same argument and cancels pending notices.
+Subscriptions end when the session ends, is disabled/replaced, or the broker
+restarts. They do not enable networking or share the board with other machines.
+
+A subscribed agent receives a native change notice with the latest board
+revision and can call `read_board` to inspect checkboxes and text responses.
+Notifications coalesce after **3 seconds without another change**, with a
+**10-second maximum coalescing delay** from the first pending change. Those are
+scheduling thresholds; a paused broker, queued work or native transport can delay
+receipt. The notice contains no Markdown and is not a normal message requiring
+acknowledgement. Failed or uncertain native submissions are not automatically
+retried; the board remains available through `read_board`.
+
+To avoid being notified of its own writes, an agent supplies its own registered
+name in the optional `agent` field of `update_board`. Unattributed updates,
+including TUI responses and direct file edits, notify all subscribers. A pending
+notification from another writer survives subsequent own writes. No-op edits do
+not generate notifications. Writer attribution is supplied by a local caller;
+it is not a separate authentication boundary between processes of the same OS user.
 
 ## Ask the agents to maintain it
 
@@ -54,6 +132,7 @@ approval.
 ```json
 {
   "expected_revision": "FULL_REVISION_RETURNED_BY_READ_BOARD",
+  "agent": "codex-<this-session-UUID>",
   "edits": [
     {
       "op": "replace",
@@ -92,7 +171,8 @@ reuse the editor and viewer without imposing a content schema.
 
 Manual file edits are possible, but external editors do not participate in the
 broker's revision transaction. Coordinate manual changes with active agents to
-avoid racing a file save against an MCP update. The live viewer is read-only;
-terminal control sequences are removed for display, while the Markdown file
+avoid racing a file save against an MCP update. The TUI edits only the selected
+checkbox or marked text field. Terminal control sequences are removed for display,
+while the Markdown file
 retains its original text. Links, HTML and images do not execute commands or fetch
 network resources.

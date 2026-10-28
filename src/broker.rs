@@ -40,6 +40,7 @@ pub struct Broker {
     pub(crate) wake: Arc<Notify>,
     pub(crate) network_wake: Arc<Notify>,
     pub(crate) pairing_notifications: Arc<Mutex<crate::pairing_notifications::State>>,
+    pub(crate) board_notifications: Arc<Mutex<crate::board_notifications::State>>,
     pub(crate) lan_pairing: Arc<Mutex<Option<crate::network::lan_pairing::Manager>>>,
     pub(crate) pairing_routes:
         Arc<Mutex<std::collections::BTreeMap<String, Vec<libp2p::Multiaddr>>>>,
@@ -183,6 +184,7 @@ impl Broker {
             pairing_notifications: Arc::new(Mutex::new(
                 crate::pairing_notifications::State::default(),
             )),
+            board_notifications: Arc::new(Mutex::new(crate::board_notifications::State::default())),
             lan_pairing: Arc::new(Mutex::new(None)),
             pairing_routes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             network_status: Arc::new(Mutex::new(json!({"enabled":false}))),
@@ -391,16 +393,52 @@ impl Broker {
             Request::BoardUpdate {
                 expected_revision,
                 edits,
-            } => match crate::board::update(&self.state_dir, &expected_revision, &edits) {
-                Ok(board) => json!({"applied":true,"board":board}),
-                Err(error) => {
-                    if let Some(conflict) = error.downcast_ref::<crate::board::Conflict>() {
-                        json!({"applied":false,"conflict":true,"board":conflict.current,"message":"The board changed. Review this current snapshot and retry your edits with its revision."})
-                    } else {
-                        return Err(error);
+                actor,
+            } => {
+                let actor = actor.map(|name| db.agent(&name)).transpose()?;
+                ensure!(
+                    actor.as_ref().is_none_or(|agent| agent.enabled),
+                    "Board writer must be an enabled local registration"
+                );
+                // Observe external file changes before attributing this edit,
+                // otherwise an agent writing on top of a manual edit could
+                // accidentally suppress that earlier change for itself.
+                let before = crate::board::read(&self.state_dir)?;
+                self.board_notifications.lock().unwrap().observe(
+                    &before.revision,
+                    None,
+                    std::time::Instant::now(),
+                );
+                match crate::board::update(&self.state_dir, &expected_revision, &edits) {
+                    Ok(board) => {
+                        self.board_notifications.lock().unwrap().observe(
+                            &board.revision,
+                            actor.as_ref(),
+                            std::time::Instant::now(),
+                        );
+                        json!({"applied":true,"board":board})
+                    }
+                    Err(error) => {
+                        if let Some(conflict) = error.downcast_ref::<crate::board::Conflict>() {
+                            json!({"applied":false,"conflict":true,"board":conflict.current,"message":"The board changed. Review this current snapshot and retry your edits with its revision."})
+                        } else {
+                            return Err(error);
+                        }
                     }
                 }
-            },
+            }
+            Request::BoardSubscribe { agent } => {
+                let agent = db.agent(&agent)?;
+                let board = crate::board::read(&self.state_dir)?;
+                let mut state = self.board_notifications.lock().unwrap();
+                state.prune(|name| db.agent(name).ok());
+                state.subscribe(agent.clone(), &board.revision, std::time::Instant::now())?;
+                json!({"subscribed":true,"agent":agent.name,"board":"main","revision":board.revision,"debounce_seconds":3,"max_delay_seconds":10,"persistent":false})
+            }
+            Request::BoardUnsubscribe { agent } => {
+                self.board_notifications.lock().unwrap().unsubscribe(&agent);
+                json!({"subscribed":false,"agent":agent,"board":"main"})
+            }
             Request::Register { mut agent, replace } => {
                 if agent.provider == Provider::Claude {
                     agent.endpoint = delivery::validate_socket(Path::new(&agent.endpoint))?
@@ -1090,6 +1128,10 @@ impl Broker {
                 json!({"revoked":peer})
             }
         };
+        self.board_notifications
+            .lock()
+            .unwrap()
+            .prune(|name| db.agent(name).ok());
         drop(db);
         self.wake.notify_one();
         self.network_wake.notify_one();
@@ -1120,17 +1162,26 @@ impl Broker {
             .as_str()
             .context("Native thread is missing its ID")?;
         let enabled = thread["status"]["type"] != "notLoaded";
-        self.db
+        let mut db = self.db.lock().unwrap();
+        db.observe_codex(session, thread["name"].as_str(), enabled)?;
+        self.board_notifications
             .lock()
             .unwrap()
-            .observe_codex(session, thread["name"].as_str(), enabled)?;
+            .prune(|name| db.agent(name).ok());
+        drop(db);
         self.wake.notify_one();
         self.network_wake.notify_one();
         Ok(())
     }
 
     pub fn codex_offline(&self, session: Option<&str>) -> Result<()> {
-        self.db.lock().unwrap().codex_offline(session)
+        let db = self.db.lock().unwrap();
+        db.codex_offline(session)?;
+        self.board_notifications
+            .lock()
+            .unwrap()
+            .prune(|name| db.agent(name).ok());
+        Ok(())
     }
 
     pub fn discovery_status(&self, status: Value) {
@@ -1225,6 +1276,8 @@ pub async fn serve_with_discovery(bound: BoundServer, codex_home: Option<PathBuf
     tokio::pin!(monitoring);
     let pairing_notifications = crate::pairing_notifications::run(broker.clone());
     tokio::pin!(pairing_notifications);
+    let board_notifications = crate::board_notifications::run(broker.clone());
+    tokio::pin!(board_notifications);
     let networking = crate::network::worker::run(broker.clone());
     tokio::pin!(networking);
     let observer = async {
@@ -1255,6 +1308,7 @@ pub async fn serve_with_discovery(bound: BoundServer, codex_home: Option<PathBuf
             res=&mut dispatcher=>break res,
             _=&mut monitoring=>unreachable!("Monitor worker runs until shutdown"),
             res=&mut pairing_notifications=>break res,
+            res=&mut board_notifications=>break res,
             _=&mut networking=>unreachable!("Network worker runs until shutdown"),
             _=&mut claude_observer=>unreachable!("Claude title observer runs until shutdown"),
             _=&mut observer=>unreachable!("Discovery observer runs until shutdown"),

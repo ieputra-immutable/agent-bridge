@@ -114,7 +114,9 @@ The TUI renders the document live, including Markdown tables. Use arrow keys or
 `j`/`k` to scroll, `w` to toggle wrapping, and `q` to quit.
 
 The board is a general Markdown document: use it for any structure you and your
-agents find useful. See [shared board usage](docs/board.md).
+agents find useful. Answer task checkboxes and marked text fields directly in the
+TUI; agents can opt into debounced change notifications through MCP. See
+[shared board usage](docs/board.md).
 
 ## Connect another machine
 
