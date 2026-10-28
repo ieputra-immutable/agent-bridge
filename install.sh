@@ -11,7 +11,7 @@ Usage: install.sh [--version TAG] [--no-service] [--bin-dir ABSOLUTE_PATH]
                   [--state-dir ABSOLUTE_PATH]
 
 Downloads a SHA-256 checked Linux/macOS executable from jasadams/agent-bridge.
-The installer selects the current published build by default.
+The installer selects the latest published semantic version by default.
 Installs and starts the per-user service unless --no-service is supplied.
 A custom --bin-dir requires --no-service. No sudo, Rust toolchain or Node.js needed.
 Binary-only updates refuse the default path when a managed service is configured.
@@ -26,7 +26,7 @@ absolute_path() {
 '*|*"$(printf '\r')"*) fail "$1 must not contain newline characters" ;; esac
 }
 
-version=dogfood
+version=latest
 no_service=false
 bin_dir=
 state_dir=
@@ -43,6 +43,19 @@ while [ "$#" -gt 0 ]; do
 done
 case "$version" in ''|[-.]*|*[!A-Za-z0-9._-]*) fail 'invalid release tag' ;; esac
 [ "${#version}" -le 128 ] || fail 'release tag is too long'
+semantic_tag() {
+    printf '%s\n' "$1" | awk '
+        /^v[0-9]+\.[0-9]+\.[0-9]+$/ {
+            sub(/^v/, ""); split($0, parts, ".")
+            for (i=1; i<=3; i++) if (length(parts[i])>1 && substr(parts[i],1,1)=="0") exit 1
+            valid=1
+        }
+        END { if (!valid || NR != 1) exit 1 }
+    '
+}
+if [ "$version" != latest ]; then
+    semantic_tag "$version" || fail 'version must be a semantic release tag such as v0.2.0'
+fi
 [ -n "${HOME:-}" ] || fail 'HOME must be set'
 absolute_path HOME "$HOME"
 default_bin_dir=$HOME/.local/bin
@@ -237,15 +250,27 @@ trap cleanup 0
 trap 'exit 1' 1 2 3 15
 work_dir=$(mktemp -d "$private_tmp_parent/agent-bridge-install.XXXXXXXX") || fail 'cannot create a private download directory'
 asset=agent-bridge-$platform-$arch
+if [ "$version" = latest ]; then
+    release_url=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location \
+        --silent --show-error --retry 3 --connect-timeout 10 --max-time 120 \
+        --output /dev/null --write-out '%{url_effective}' \
+        https://github.com/jasadams/agent-bridge/releases/latest) || fail 'cannot resolve the latest published release'
+    case "$release_url" in
+        https://github.com/jasadams/agent-bridge/releases/tag/*) version=${release_url##*/} ;;
+        *) fail 'latest release resolved to an unexpected URL' ;;
+    esac
+    [ "$release_url" = "https://github.com/jasadams/agent-bridge/releases/tag/$version" ] || fail 'latest release resolved to an unexpected URL'
+    [ "${#version}" -le 128 ] && semantic_tag "$version" || fail 'latest release is not a semantic version'
+fi
 base_url=https://github.com/jasadams/agent-bridge/releases/download/$version
 download() {
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location \
         --silent --show-error --retry 3 --connect-timeout 10 --max-time 300 \
         --output "$2" "$1" || fail "download failed; check that release '$version' has published $asset and SHA256SUMS"
 }
-printf 'Downloading Agent Bridge for %s/%s...\n' "$platform" "$arch"
+printf 'Downloading Agent Bridge %s for %s/%s...\n' "$version" "$platform" "$arch"
 download "$base_url/SHA256SUMS" "$work_dir/SHA256SUMS"
-for filename in "$asset" LICENSE THIRD_PARTY_LICENSES.txt SOURCE_COMMIT; do
+for filename in "$asset" LICENSE THIRD_PARTY_LICENSES.txt SOURCE_COMMIT SOURCE_VERSION; do
     download "$base_url/$filename" "$work_dir/$filename"
     expected=$(awk -v name="$filename" '
         ($2 == name || $2 == "*" name) {
@@ -263,8 +288,12 @@ for filename in "$asset" LICENSE THIRD_PARTY_LICENSES.txt SOURCE_COMMIT; do
     [ "$actual" = "$expected" ] || fail 'checksum verification failed; nothing was installed'
 done
 source_commit=$(awk 'NR==1 && length($0)==40 && $0 !~ /[^a-fA-F0-9]/ {commit=tolower($0);valid=1} END {if(NR!=1 || !valid)exit 1;print commit}' "$work_dir/SOURCE_COMMIT") || fail 'SOURCE_COMMIT must contain one full source commit hash'
+source_version=$(awk 'NR==1 {value=$0} END {if(NR!=1)exit 1;print value}' "$work_dir/SOURCE_VERSION") || fail 'SOURCE_VERSION must contain one semantic version'
+[ "$source_version" = "${version#v}" ] || fail 'release tag and SOURCE_VERSION disagree; nothing was installed'
 chmod 700 "$work_dir/$asset"
-"$work_dir/$asset" --version </dev/null || fail 'the verified executable cannot run on this system; nothing was installed'
+binary_version=$("$work_dir/$asset" --version </dev/null) || fail 'the verified executable cannot run on this system; nothing was installed'
+[ "$binary_version" = "agent-bridge $source_version" ] || fail 'the executable version disagrees with its release tag; nothing was installed'
+printf '%s\n' "$binary_version"
 
 # Persist complete notices before a service upgrade, retaining earlier versions.
 if [ "$bin_dir" = "$default_bin_dir" ]; then
@@ -273,11 +302,11 @@ else
     notice_parent=$bin_dir/.agent-bridge-licenses
 fi
 notice_parent=$(secure_create_directory "$notice_parent")
-notice_directory=$notice_parent/$source_commit
+notice_directory=$notice_parent/$source_commit-$source_version
 if [ -e "$notice_directory" ] || [ -L "$notice_directory" ]; then
     [ -d "$notice_directory" ] && [ ! -L "$notice_directory" ] || fail 'existing license destination is unsafe'
     safe_directory "$notice_directory" >/dev/null
-    for filename in LICENSE THIRD_PARTY_LICENSES.txt SOURCE_COMMIT; do
+    for filename in LICENSE THIRD_PARTY_LICENSES.txt SOURCE_COMMIT SOURCE_VERSION; do
         [ -f "$notice_directory/$filename" ] && [ ! -L "$notice_directory/$filename" ] || fail 'existing license files are unsafe'
         if [ "$checksum_tool" = sha256sum ]; then
             existing=$(sha256sum "$notice_directory/$filename" | awk '{print $1}')
@@ -290,7 +319,7 @@ if [ -e "$notice_directory" ] || [ -L "$notice_directory" ]; then
     done
 else
     staged_notices=$(mktemp -d "$notice_parent/.agent-bridge-notices.XXXXXXXX")
-    for filename in LICENSE THIRD_PARTY_LICENSES.txt SOURCE_COMMIT; do
+    for filename in LICENSE THIRD_PARTY_LICENSES.txt SOURCE_COMMIT SOURCE_VERSION; do
         cp "$work_dir/$filename" "$staged_notices/$filename"
         chmod 644 "$staged_notices/$filename"
     done

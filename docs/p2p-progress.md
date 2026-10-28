@@ -21,11 +21,11 @@ vulnerability-free guarantee.
 Remaining acceptance includes physical Internet/router testing, supported native
 Codex/Claude and macOS checks, an external human security audit and a supported
 history retention/compaction workflow preserving replay protection. Publication
-is source availability, not an official release or production-readiness claim.
+does not imply production-readiness or completion of the remaining acceptance work.
 
 The original code is GPL-3.0-or-later; third-party notices are retained.
 
-## Portable dogfood installation
+## Portable installation and releases
 
 A POSIX installer selects prebuilt Linux/macOS x86_64/arm64 binaries, verifies
 checksums and retains source/license notices before delegating transactional
@@ -34,11 +34,13 @@ private backup and restore matching binary/state on failure. Existing state,
 identity, grants and service configuration are preserved. Binary-only installs
 are available without service managers.
 
-CI tests/builds all four platforms before publishing immutable per-commit dogfood
-prereleases and updating the moving convenience channel. Corresponding source
+CI tests/builds all four platforms before publishing an immutable semantic-version
+release. Version tags supply the executable's version, and the installer selects
+the latest published release or an explicitly pinned tag. Corresponding source
 includes locked dependency sources and offline build configuration. The source
 revision is exposed in CI-built status metadata. See [installation](install.md).
-This remains dogfooding, not an official stable release.
+The project currently uses pre-1.0 semantic versions; publication does not imply
+completion of the remaining security and physical-network acceptance work.
 
 Native CI additionally exercises repeated threaded and separate-process identity
 initialization with both process-local and filesystem serialization. Identity lock

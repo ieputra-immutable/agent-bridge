@@ -525,7 +525,7 @@ impl Broker {
             Request::Status => {
                 let mut network = self.network_status.lock().unwrap().clone();
                 network["configured"] = json!(db.network_config()?);
-                json!({"version":env!("CARGO_PKG_VERSION"),"build_commit":crate::BUILD_COMMIT,"pid":std::process::id(),"state_dir":self.state_dir,"paused":db.paused()?,"messages":db.counts()?,"codex_discovery":self.discovery_status.lock().unwrap().clone(),"network":network,"monitor":self.monitor_control.lock().unwrap().status(),"machine":self.local_machine(&db)?})
+                json!({"version":crate::VERSION,"build_commit":crate::BUILD_COMMIT,"pid":std::process::id(),"state_dir":self.state_dir,"paused":db.paused()?,"messages":db.counts()?,"codex_discovery":self.discovery_status.lock().unwrap().clone(),"network":network,"monitor":self.monitor_control.lock().unwrap().status(),"machine":self.local_machine(&db)?})
             }
             Request::RemoteList | Request::RemoteListPeer { .. } => {
                 let mut agents = match &req {
@@ -1292,7 +1292,7 @@ pub async fn serve_with_discovery(bound: BoundServer, codex_home: Option<PathBuf
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     eprintln!(
         "agent-bridge {} listening at {}",
-        env!("CARGO_PKG_VERSION"),
+        crate::VERSION,
         bound.socket.display()
     );
     let result = loop {

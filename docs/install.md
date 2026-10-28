@@ -7,7 +7,9 @@ does not need sudo, Rust, Node.js or a model API key.
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/jasadams/agent-bridge/main/install.sh | sh
 ```
 
-The installer selects the current published build. Supported platforms are Linux x86_64/arm64 with glibc 2.35 or newer, and macOS Intel/Apple
+The installer resolves the latest published semantic version once, then downloads
+all files from that immutable release tag. Supported platforms are Linux
+x86_64/arm64 with glibc 2.35 or newer, and macOS Intel/Apple
 Silicon with macOS 13 or newer. Alpine/musl and older systems can build from source.
 macOS binaries are ad-hoc signed, not Apple notarized.
 
@@ -60,10 +62,12 @@ identities and history. For an existing service using a custom state directory,
 pass that same directory; the installer refuses ambiguous or mismatched service
 state instead of risking a rollback against the wrong database.
 
-`--version RELEASE_TAG` pins a specific published build. Choose the exact tag from
-[release downloads](https://github.com/jasadams/agent-bridge/releases). The default
-channel advances after all platform builds and checks succeed.
-`status.build_commit` identifies the installed source revision.
+`--version v0.2.0` pins a specific published semantic version. Choose the exact tag
+from [release downloads](https://github.com/jasadams/agent-bridge/releases). The
+latest release advances only after all platform builds and checks succeed.
+The installer verifies that SOURCE_VERSION and the executable's reported version
+match that tag. `agent-bridge --version` and `status.version` identify the running
+version; `status.build_commit` identifies its source revision.
 
 ## Updates, backups and removal
 
@@ -75,6 +79,8 @@ before restarting the prior service. Backup paths are printed and retained under
 `~/.local/state/agent-bridge-backups/`. Treat backups as private identity material.
 Existing service environment/configuration is preserved on compatible upgrades.
 No peer grants, trust, history, hook settings or native permissions are reset.
+Reconnect the Agent Bridge MCP server or restart its client after upgrading;
+existing stdio connections keep the previous executable and tool definitions.
 
 Binary-only installs retain the previous executable beside the destination.
 They refuse to overwrite a configured managed installation, even when it is
@@ -91,15 +97,15 @@ must never open a newer schema; follow the [backup/rollback guidance](peer-trust
 ## Download integrity and licensing
 
 The script uses HTTPS and verifies exact SHA-256 manifest entries for the binary,
-GPL license, complete dependency notice bundle and source commit before executing
-anything. Checksums detect corruption or a mixed download during channel updates;
+GPL license, complete dependency notice bundle, source commit and source version
+before executing anything. Checksums detect corrupt or inconsistent downloads;
 they are not an independent publisher signature. As with any `curl | sh` command,
 you are trusting this repository and its distribution account. You can download
 and inspect the script before running it instead.
 
 Versioned license notices are retained under
-`~/.local/share/agent-bridge/licenses/COMMIT/` (or inside a custom binary directory's
-`.agent-bridge-licenses/COMMIT/`). Each published build provides its full
+`~/.local/share/agent-bridge/licenses/COMMIT-VERSION/` (or inside a custom binary
+directory's `.agent-bridge-licenses/COMMIT-VERSION/`). Each published build provides its full
 corresponding source, locked dependency sources and offline Cargo configuration.
 The original project is GPL-3.0-or-later; dependencies retain their own licenses.
 
@@ -115,3 +121,7 @@ cargo build --release --locked
 Release builds use Rust 1.98.0. Source builds need the platform C toolchain. The service
 can run without a Codex executable installed; private native delivery requires a
 compatible running native daemon and an already loaded destination session.
+For an exact tagged version, check out the tag and set
+`AGENT_BRIDGE_BUILD_VERSION=0.2.0` when building. Downloaded corresponding-source
+archives contain SOURCE_VERSION and preserve their release version automatically.
+See [versioned releases](releasing.md).

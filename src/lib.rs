@@ -20,5 +20,8 @@ mod monitor_data;
 mod codex_queue;
 mod pairing_notifications;
 
-/// Source revision provided by the dogfood build workflow.
+/// Application version selected by the release tag or packaged source metadata.
+pub const VERSION: &str = env!("AGENT_BRIDGE_VERSION");
+
+/// Source revision provided by the release build workflow.
 pub const BUILD_COMMIT: Option<&str> = option_env!("AGENT_BRIDGE_BUILD_COMMIT");

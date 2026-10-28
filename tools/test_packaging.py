@@ -1,14 +1,88 @@
 #!/usr/bin/env python3
 """Check public source archive metadata and original-notice isolation."""
 import io
+import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
-from package_dogfood import license_files, normalized_entry
+from package_release import license_files, normalized_entry, release_notes, source_metadata, version_changes
 
 
 class PackagingTests(unittest.TestCase):
+    def test_release_notes_cannot_escape_the_archived_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            notes = source / 'docs/releases/v0.2.0.md'
+            notes.parent.mkdir(parents=True)
+            private = root / 'private'
+            private.write_text('host data must never enter the release')
+            self.assertEqual(version_changes(source, '0.2.0'), '')
+            notes.write_text('## Compatibility\nUse the peer selector.\n')
+            content = version_changes(source, '0.2.0')
+            self.assertIn(content, release_notes('0.2.0', 'a' * 40, content))
+            notes.unlink()
+            notes.symlink_to(private)
+            with self.assertRaises(ValueError):
+                version_changes(source, '0.2.0')
+            notes.unlink()
+            notes.parent.rmdir()
+            notes.parent.symlink_to(root, target_is_directory=True)
+            (root / 'v0.2.0.md').write_text('outside source')
+            with self.assertRaises(ValueError):
+                version_changes(source, '0.2.0')
+
+    def test_source_archive_keeps_release_version_and_offline_build_instructions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            commit = '0123456789abcdef0123456789abcdef01234567'
+            source_metadata(root, commit, '0.2.0')
+            self.assertEqual((root / 'SOURCE_VERSION').read_text(), '0.2.0\n')
+            self.assertEqual((root / 'SOURCE_COMMIT').read_text(), commit + '\n')
+            instructions = (root / 'BUILDING-OFFLINE.md').read_text()
+            self.assertIn('SOURCE_VERSION automatically', instructions)
+            self.assertIn('cargo build --release --locked --offline', instructions)
+            notes = release_notes('0.2.0', commit)
+            self.assertIn('# Agent Bridge 0.2.0', notes)
+            self.assertIn(commit, notes)
+
+    def test_build_script_version_precedence_and_rejection(self):
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / 'build-version'
+            subprocess.run(['rustc', '--edition=2024', str(repo / 'build.rs'),
+                            '-o', str(executable)], check=True)
+            environment = dict(os.environ, CARGO_MANIFEST_DIR=str(root),
+                               CARGO_PKG_VERSION='0.1.3')
+            environment.pop('AGENT_BRIDGE_BUILD_VERSION', None)
+
+            def run(override=None):
+                env = environment.copy()
+                if override is not None:
+                    env['AGENT_BRIDGE_BUILD_VERSION'] = override
+                return subprocess.run([str(executable)], env=env, capture_output=True, text=True)
+
+            development = run()
+            self.assertEqual(development.returncode, 0, development.stderr)
+            self.assertIn('AGENT_BRIDGE_VERSION=0.1.3', development.stdout)
+            (root / 'SOURCE_VERSION').write_text('0.2.0\n')
+            packaged = run()
+            self.assertEqual(packaged.returncode, 0, packaged.stderr)
+            self.assertIn('AGENT_BRIDGE_VERSION=0.2.0', packaged.stdout)
+            tagged = run('0.3.0')
+            self.assertEqual(tagged.returncode, 0, tagged.stderr)
+            self.assertIn('AGENT_BRIDGE_VERSION=0.3.0', tagged.stdout)
+            for invalid in ['', 'v0.2.0', '00.2.0', '0.02.0', '0.2', '0.2.0\n',
+                            '0.2.0-rc.1', '1.2.18446744073709551616']:
+                result = run(invalid)
+                self.assertNotEqual(result.returncode, 0, invalid)
+                self.assertIn('Expected a version', result.stderr)
+            (root / 'SOURCE_VERSION').write_text('invalid\n')
+            self.assertNotEqual(run().returncode, 0)
+
     def test_archive_metadata_never_contains_build_machine_identity(self):
         info = tarfile.TarInfo('agent-bridge/source.rs')
         info.uid, info.gid = 1234, 4321

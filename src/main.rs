@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
-    version,
+    version = agent_bridge::VERSION,
     about = "Durable local and peer messaging between native Claude and Codex sessions"
 )]
 struct Cli {

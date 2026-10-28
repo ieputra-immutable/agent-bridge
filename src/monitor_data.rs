@@ -132,9 +132,7 @@ impl Broker {
     }
     pub(crate) fn monitor_metadata(&self) -> Result<Value> {
         let db = self.db.lock().unwrap();
-        Ok(
-            json!({"machine":self.local_machine(&db)?,"read_only":true,"version":env!("CARGO_PKG_VERSION")}),
-        )
+        Ok(json!({"machine":self.local_machine(&db)?,"read_only":true,"version":crate::VERSION}))
     }
     pub(crate) fn monitor_revision(&self) -> Result<(u64, u64)> {
         let db = self.db.lock().unwrap();

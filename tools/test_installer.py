@@ -37,7 +37,8 @@ class InstallerTests(unittest.TestCase):
                         FAKE_UID=str(os.getuid() or 1000), FAKE_LIBC="glibc 2.35", FAKE_LDD="GNU libc",
                         FAKE_SERVICE_ACTIVE="0", INSTALLER_EXECUTED=str(self.root / "executed"),
                         INSTALLER_SERVICE_LOG=str(self.root / "service-args"),
-                        FAKE_CURL_LOG=str(self.root / "curl-args"), FAKE_SERVICE_RESULT="0")
+                        FAKE_CURL_LOG=str(self.root / "curl-args"), FAKE_SERVICE_RESULT="0",
+                        FAKE_LATEST_URL="https://github.com/jasadams/agent-bridge/releases/tag/v0.2.0")
         for command in ["awk", "cp", "chmod", "mv", "rm", "mkdir", "mktemp", "cat", "sha256sum"]:
             actual = shutil.which(command)
             if not actual and command == "sha256sum":
@@ -77,23 +78,29 @@ args=sys.argv[1:]
 with open(os.environ['FAKE_CURL_LOG'],'a') as f:f.write(json.dumps(args)+'\\n')
 out=args[args.index('--output')+1]
 url=args[-1]
-assert url.startswith('https://github.com/jasadams/agent-bridge/releases/download/')
 assert '--proto' in args and args[args.index('--proto')+1]=='=https'
 assert '--proto-redir' in args and args[args.index('--proto-redir')+1]=='=https'
 assert '--tlsv1.2' in args and '--fail' in args and '--location' in args
+if url == 'https://github.com/jasadams/agent-bridge/releases/latest':
+    assert '--write-out' in args and args[args.index('--write-out')+1]=='%{url_effective}'
+    assert out == '/dev/null'
+    print(os.environ['FAKE_LATEST_URL'], end='')
+    sys.exit(0)
+assert url.startswith('https://github.com/jasadams/agent-bridge/releases/download/')
 source=pathlib.Path(os.environ['FIXTURE_ROOT'])/url.rsplit('/',1)[-1]
 if not source.is_file():sys.exit(22)
 shutil.copyfile(source,out)
 """, python=True)
         self.fixture_binary = b'''#!/bin/sh
 printf '%s\\n' "$1" >> "$INSTALLER_EXECUTED"
-if [ "$1" = --version ]; then printf 'agent-bridge test\\n'; exit 0; fi
+if [ "$1" = --version ]; then printf 'agent-bridge %s\\n' "${FAKE_BINARY_VERSION:-0.2.0}"; exit 0; fi
 printf '%s\\n' "$@" > "$INSTALLER_SERVICE_LOG"
 exit "$FAKE_SERVICE_RESULT"
 '''
         self.notices = {"LICENSE": b"Fixture project GPL license\n",
                         "THIRD_PARTY_LICENSES.txt": b"Fixture dependency licenses\n",
-                        "SOURCE_COMMIT": b"0123456789abcdef0123456789abcdef01234567\n"}
+                        "SOURCE_COMMIT": b"0123456789abcdef0123456789abcdef01234567\n",
+                        "SOURCE_VERSION": b"0.2.0\n"}
         for name, content in self.notices.items():
             (self.downloads / name).write_bytes(content)
         self.asset = "agent-bridge-linux-x86_64"
@@ -108,6 +115,8 @@ exit "$FAKE_SERVICE_RESULT"
         path.chmod(0o700)
 
     def publish(self, asset, manifest=None):
+        for name, content in self.notices.items():
+            (self.downloads / name).write_bytes(content)
         (self.downloads / asset).write_bytes(self.fixture_binary)
         digest = hashlib.sha256(self.fixture_binary).hexdigest()
         checksum_lines = f"{digest}  {asset}\n" + "".join(
@@ -173,10 +182,64 @@ exit "$FAKE_SERVICE_RESULT"
             with self.subTest(system=system, machine=machine):
                 self.env.update(FAKE_OS=system, FAKE_ARCH=machine)
                 self.publish(asset)
-                result = self.run_installer("--version", "dogfood-012345abcdef", "--no-service")
+                result = self.run_installer("--version", "v0.2.0", "--no-service")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = [json.loads(line) for line in (self.root / "curl-args").read_text().splitlines()]
-                self.assertTrue(any(call[-1].endswith("/dogfood-012345abcdef/" + asset) for call in calls))
+                self.assertTrue(any(call[-1].endswith("/v0.2.0/" + asset) for call in calls))
+                self.assertFalse(any(call[-1].endswith('/releases/latest') for call in calls))
+
+    def test_latest_resolves_once_and_all_downloads_use_the_immutable_version(self):
+        result = self.run_installer("--no-service")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in (self.root / "curl-args").read_text().splitlines()]
+        self.assertEqual(sum(call[-1].endswith('/releases/latest') for call in calls), 1)
+        downloads = [call[-1] for call in calls if '/releases/download/' in call[-1]]
+        self.assertEqual(len(downloads), 6)
+        self.assertTrue(all('/releases/download/v0.2.0/' in url for url in downloads))
+        self.assertIn('Agent Bridge v0.2.0', result.stdout)
+
+    def test_latest_rejects_unexpected_or_nonsemantic_destinations(self):
+        for url in ['https://example.com/releases/tag/v0.2.0',
+                    'https://github.com/jasadams/agent-bridge/releases/tag/v00.2.0',
+                    'https://github.com/jasadams/agent-bridge/releases/tag/nightly',
+                    'https://github.com/jasadams/agent-bridge/releases/tag/extra/v0.2.0',
+                    'https://github.com/jasadams/agent-bridge/releases/tag/v0.2.0?query=yes',
+                    'https://github.com/jasadams/agent-bridge/releases/tag/v0.2.0\ninvalid']:
+            with self.subTest(url=url):
+                self.env['FAKE_LATEST_URL'] = url
+                result = self.run_installer('--no-service')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / 'executed').exists())
+                self.assertFalse((self.home / '.local/bin/agent-bridge').exists())
+                self.assert_clean_downloads()
+
+    def test_release_metadata_and_executable_must_match_the_selected_version(self):
+        self.notices['SOURCE_VERSION'] = b'0.2.1\n'
+        self.publish(self.asset)
+        result = self.run_installer('--no-service')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('SOURCE_VERSION disagree', result.stderr)
+        self.assertFalse((self.root / 'executed').exists())
+        self.notices['SOURCE_VERSION'] = b'0.2.0\n'
+        self.publish(self.asset)
+        self.env['FAKE_BINARY_VERSION'] = '0.2.1'
+        result = self.run_installer('--no-service')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('executable version disagrees', result.stderr)
+        self.assertFalse((self.home / '.local/bin/agent-bridge').exists())
+
+    def test_same_source_commit_can_have_distinct_semantic_build_versions(self):
+        first = self.run_installer('--no-service')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.notices['SOURCE_VERSION'] = b'0.2.1\n'
+        self.publish(self.asset)
+        self.env['FAKE_BINARY_VERSION'] = '0.2.1'
+        second = self.run_installer('--version', 'v0.2.1', '--no-service')
+        self.assertEqual(second.returncode, 0, second.stderr)
+        parent = self.home / '.local/share/agent-bridge/licenses'
+        commit = '0123456789abcdef0123456789abcdef01234567'
+        self.assertEqual((parent / f'{commit}-0.2.0/SOURCE_VERSION').read_text(), '0.2.0\n')
+        self.assertEqual((parent / f'{commit}-0.2.1/SOURCE_VERSION').read_text(), '0.2.1\n')
 
     def test_unsupported_platform_arch_libc_and_root_fail_before_download(self):
         for change in [{"FAKE_OS": "FreeBSD"}, {"FAKE_ARCH": "ppc64"},
@@ -260,7 +323,7 @@ exit "$FAKE_SERVICE_RESULT"
     def test_notice_files_are_versioned_and_conflicts_are_not_overwritten(self):
         first=self.run_installer("--no-service")
         self.assertEqual(first.returncode,0,first.stderr)
-        notice_dir=self.home / ".local/share/agent-bridge/licenses/0123456789abcdef0123456789abcdef01234567"
+        notice_dir=self.home / ".local/share/agent-bridge/licenses/0123456789abcdef0123456789abcdef01234567-0.2.0"
         for name, content in self.notices.items():self.assertEqual((notice_dir/name).read_bytes(),content)
         second=self.run_installer("--no-service")
         self.assertEqual(second.returncode,0,second.stderr)

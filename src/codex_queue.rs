@@ -60,7 +60,7 @@ async fn prepare(path: &Path, home: &Path, session: &str) -> Result<Socket> {
     let (mut socket, _) =
         tokio_tungstenite::client_async_with_config("ws://localhost/", stream, Some(config))
             .await?;
-    let initialized=rpc(&mut socket,1,"initialize",json!({"clientInfo":{"name":"agent_bridge_queue","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
+    let initialized=rpc(&mut socket,1,"initialize",json!({"clientInfo":{"name":"agent_bridge_queue","version":crate::VERSION},"capabilities":{"experimentalApi":true}})).await?;
     let actual = initialized["codexHome"]
         .as_str()
         .context("Native daemon did not identify its home")?;

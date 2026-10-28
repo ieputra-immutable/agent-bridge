@@ -5,8 +5,8 @@
 Agent Bridge lets **Codex and Claude Code sessions collaborate on one machine or
 across a peer-to-peer network**. Agents exchange messages, hand off work and keep a
 shared Markdown board up to date while you continue using their normal interfaces.
-Open the live terminal board to see tasks, progress and requests for your input,
-or use the browser monitor to inspect messages as they move between agents.
+Use the live terminal board to follow progress and answer agent questions with
+checkboxes and text responses, or inspect message delivery in the browser monitor.
 
 Run it on Linux or macOS with a single binary. You control which machines are
 paired and which individual sessions can communicate.
@@ -17,8 +17,9 @@ paired and which individual sessions can communicate.
   and configurable self-hosted relays provide direct connections with encrypted
   relay fallback. There is no central account or mandatory hosted service.
 - **Keep a live shared board.** Give agents a Markdown table, checklist or project
-  outline to maintain. The terminal view refreshes as they edit, and revision
-  checks protect concurrent updates. Board contents and layout are yours to define.
+  outline to maintain, and answer questions directly in the terminal. Agents can
+  subscribe to changes; revision checks protect concurrent edits. Board contents
+  and layout are yours to define.
 - **Give agents structured tools.** The built-in MCP server provides messaging,
   pairing, session sharing and board editing through a persistent local connection.
 - **Stay in control of access.** Persistent machine identities, owner-approved
@@ -57,6 +58,9 @@ macOS.
 
 See [installation options](docs/install.md) for custom state directories,
 binary-only installation, source builds, backups and removal.
+The installer selects the latest published semantic version. Agent Bridge currently
+uses `0.x.y` versions; check [release notes](https://github.com/jasadams/agent-bridge/releases)
+for compatibility changes before updating integrations.
 
 ## Connect your agents
 
@@ -117,6 +121,8 @@ The board is a general Markdown document: use it for any structure you and your
 agents find useful. Answer task checkboxes and marked text fields directly in the
 TUI; agents can opt into debounced change notifications through MCP. See
 [shared board usage](docs/board.md).
+Use Tab to select a response, Space to toggle a checkbox, and Enter to edit a text
+field. Ctrl-S saves the text response and Escape cancels the draft.
 
 ## Connect another machine
 
@@ -182,6 +188,9 @@ configuration and private state, preserving machine identity, message history an
 session grants. A failed startup restores the matching previous executable and
 state.
 
+Reconnect the Agent Bridge MCP server, or restart your agent client, to load the
+updated executable and tool definitions after an upgrade.
+
 [Release downloads](https://github.com/jasadams/agent-bridge/releases) include
 platform binaries, checksums, dependency notices and corresponding source.
 
@@ -198,6 +207,7 @@ platform binaries, checksums, dependency notices and corresponding source.
 | [Message monitor](docs/local-monitor.md) | Read-only browser visibility |
 | [Trust and security](docs/peer-trust.md) | Identities, grants, revocation and recovery |
 | [Security review](docs/security-review.md) | Review scope, fixes and remaining validation |
+| [Releases](docs/releasing.md) | Semantic version tags, build artifacts and publication |
 
 ## Build from source
 

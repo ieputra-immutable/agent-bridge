@@ -104,7 +104,7 @@ pub async fn observe_connection(broker: &Broker, path: &Path, codex_home: &Path)
         tokio_tungstenite::client_async("ws://localhost/", stream),
     )
     .await??;
-    send(&mut socket,json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent_bridge","title":"Agent Bridge","version":env!("CARGO_PKG_VERSION")}}})).await?;
+    send(&mut socket,json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent_bridge","title":"Agent Bridge","version":crate::VERSION}}})).await?;
     loop {
         let value = timeout(Duration::from_secs(5), receive(&mut socket)).await??;
         if value["id"] != 1 {
