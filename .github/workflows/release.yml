@@ -84,6 +84,7 @@ jobs:
           python3 tools/test_packaging.py
           python3 tools/test_release.py
       - name: Build portable release executable
+        if: needs.metadata.outputs.release == 'true'
         env:
           ASSET: ${{ matrix.asset }}
         run: |
@@ -95,6 +96,7 @@ jobs:
           fi
           test "$("dist/$ASSET" --version)" = "agent-bridge $AGENT_BRIDGE_BUILD_VERSION"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: needs.metadata.outputs.release == 'true'
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
