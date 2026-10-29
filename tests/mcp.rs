@@ -1028,3 +1028,76 @@ async fn shared_markdown_board_updates_atomically_and_preserves_concurrent_agent
     first.close().await;
     second.close().await;
 }
+
+#[tokio::test]
+async fn reply_outcome_requires_parent_and_round_trips_through_tools() {
+    let root = root();
+    let state = root.path().join("state");
+    let running = Running::start(&state);
+    running.inbox("alice");
+    running.inbox("bob");
+    let mut mcp = Mcp::start(&state);
+    mcp.initialize().await;
+    let tools = mcp.request("tools/list", json!({})).await;
+    let send = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "send_message")
+        .unwrap();
+    let schema = send["inputSchema"].to_string();
+    assert!(
+        schema.contains("succeeded") && schema.contains("failed"),
+        "{schema}"
+    );
+    let rejected = mcp
+        .call(
+            "send_message",
+            json!({"from":"bob","to":"alice","body":"report","outcome":"succeeded"}),
+        )
+        .await;
+    assert!(failed(&rejected), "{rejected}");
+    assert!(
+        rejected
+            .to_string()
+            .contains("Outcome requires a reply parent")
+    );
+    let sent = mcp
+        .call(
+            "send_message",
+            json!({"from":"alice","to":"bob","body":"task"}),
+        )
+        .await;
+    assert!(!failed(&sent), "{sent}");
+    let parent = structured(&sent)["id"].as_str().unwrap().to_owned();
+    assert!(structured(&sent)["result"]["outcome"].is_null());
+    let invalid = mcp
+        .call(
+            "send_message",
+            json!({"from":"bob","to":"alice","body":"report","parent":parent,"outcome":"complete"}),
+        )
+        .await;
+    assert!(failed(&invalid), "{invalid}");
+    for outcome in ["succeeded", "failed"] {
+        let report = mcp.call("send_message", json!({"from":"bob","to":"alice","body":"report","parent":parent,"outcome":outcome})).await;
+        assert!(!failed(&report), "{report}");
+        let reply = structured(&report)["id"].as_str().unwrap();
+        assert_eq!(structured(&report)["result"]["outcome"], outcome);
+        let got = mcp.call("get_message", json!({"id":reply})).await;
+        assert_eq!(structured(&got)["result"]["outcome"], outcome);
+        assert_eq!(structured(&got)["result"]["parent"], parent);
+        let list = mcp.call("list_messages", json!({"agent":"alice"})).await;
+        assert_eq!(
+            structured(&list)["result"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["id"] == reply)
+                .unwrap()["outcome"],
+            outcome
+        );
+    }
+    let original = mcp.call("get_message", json!({"id":parent})).await;
+    assert!(structured(&original)["result"]["outcome"].is_null());
+    mcp.close().await;
+}

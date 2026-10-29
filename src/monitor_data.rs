@@ -72,10 +72,10 @@ fn row_value(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let reference: Option<Value> = envelope_parent.and_then(|s| serde_json::from_str(&s).ok());
     let parent=parent.map(|id| json!({"id":reference.as_ref().and_then(|v|v["id"].as_str()).unwrap_or(&id),"peer_id":reference.as_ref().and_then(|v|v["peer_id"].as_str()),"local_id":id}));
     Ok(
-        json!({"id":row.get::<_,String>(0)?,"created":row.get::<_,i64>(1)?,"updated":row.get::<_,i64>(2)?,"state":row.get::<_,String>(3)?,"detail":row.get::<_,Option<String>>(4)?,"body":row.get::<_,String>(5)?,"parent":parent,"source":serde_json::from_str::<Value>(&source).unwrap_or(Value::Null),"destination":serde_json::from_str::<Value>(&destination).unwrap_or(Value::Null),"direction":row.get::<_,String>(9)?,"body_truncated":row.get::<_,bool>(10)?}),
+        json!({"id":row.get::<_,String>(0)?,"created":row.get::<_,i64>(1)?,"updated":row.get::<_,i64>(2)?,"state":row.get::<_,String>(3)?,"detail":row.get::<_,Option<String>>(4)?,"body":row.get::<_,String>(5)?,"parent":parent,"outcome":row.get::<_,Option<String>>(12)?,"source":serde_json::from_str::<Value>(&source).unwrap_or(Value::Null),"destination":serde_json::from_str::<Value>(&destination).unwrap_or(Value::Null),"direction":row.get::<_,String>(9)?,"body_truncated":row.get::<_,bool>(10)?}),
     )
 }
-const PREVIEW: &str = "SELECT id,created,updated,state,substr(detail,1,512),substr(body,1,512),parent,source,destination,direction,length(body)>512,json_extract(envelope,'$.parent') FROM rows ";
+const PREVIEW: &str = "SELECT id,created,updated,state,substr(detail,1,512),substr(body,1,512),parent,source,destination,direction,length(body)>512,json_extract(envelope,'$.parent'),outcome FROM rows ";
 
 impl Db {
     fn monitor_page(&self, query: &MonitorQuery, machine: &Value) -> Result<Value> {
@@ -108,7 +108,7 @@ impl Db {
         let parsed = uuid::Uuid::parse_str(id).context("Invalid message ID")?;
         ensure!(parsed.to_string() == id, "Invalid message ID");
         let sql = format!(
-            "{ROWS} SELECT id,created,updated,state,detail,body,parent,source,destination,direction,0,json_extract(envelope,'$.parent') FROM rows WHERE id=$id"
+            "{ROWS} SELECT id,created,updated,state,detail,body,parent,source,destination,direction,0,json_extract(envelope,'$.parent'),outcome FROM rows WHERE id=$id"
         );
         let message=self.conn.query_row(&sql,named_params!{"$local_peer":machine["peer_id"].as_str(),"$local_name":machine["machine_name"].as_str(),"$id":id},row_value).optional()?.context("Message not found")?;
         let sql = format!(
@@ -168,7 +168,7 @@ mod tests {
             .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let body = format!("<script>alert('x')</script>{}", "x".repeat(1024));
-        db.send(&id, "alice", "bob", &body, &None).unwrap();
+        db.send(&id, "alice", "bob", &body, &None, None).unwrap();
         db.conn
             .execute(
                 "UPDATE agents SET session='replacement-source' WHERE name='alice'",
@@ -223,6 +223,7 @@ mod tests {
                 "bob",
                 "next",
                 &None,
+                None,
             )
             .unwrap();
         }
@@ -269,7 +270,7 @@ mod tests {
         db.register(&agent("bob", "saved-destination"), false)
             .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
-        db.send(&id, "alice", "bob", "old", &None).unwrap();
+        db.send(&id, "alice", "bob", "old", &None, None).unwrap();
         db.conn
             .execute_batch(include_str!("../tests/fixtures/native-metadata-v10.sql"))
             .unwrap();
@@ -284,5 +285,44 @@ mod tests {
             message["message"]["destination"]["session"],
             "saved-destination"
         );
+    }
+    #[test]
+    fn monitor_returns_reply_outcome_in_pages_details_and_related_messages() {
+        use crate::protocol::TaskOutcome;
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = Db::open(&dir.path().join("db")).unwrap();
+        db.register(&agent("alice", "alice-session"), false)
+            .unwrap();
+        let parent = uuid::Uuid::new_v4().to_string();
+        let reply = uuid::Uuid::new_v4().to_string();
+        db.send(&parent, "user", "alice", "task", &None, None)
+            .unwrap();
+        db.send(
+            &reply,
+            "alice",
+            "user",
+            "report",
+            &Some(parent.clone()),
+            Some(TaskOutcome::Succeeded),
+        )
+        .unwrap();
+        let machine = json!({"peer_id":null,"machine_name":"local"});
+        let page = db.monitor_page(&MonitorQuery::default(), &machine).unwrap();
+        assert_eq!(
+            page["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["id"] == reply)
+                .unwrap()["outcome"],
+            "succeeded"
+        );
+        assert_eq!(
+            db.monitor_detail(&reply, &machine).unwrap()["message"]["outcome"],
+            "succeeded"
+        );
+        let detail = db.monitor_detail(&parent, &machine).unwrap();
+        assert!(detail["message"]["outcome"].is_null());
+        assert_eq!(detail["related"][0]["outcome"], "succeeded");
     }
 }

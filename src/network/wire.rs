@@ -1,5 +1,5 @@
 //! Network messages are deliberately separate from the privileged local Request API.
-use crate::protocol::Provider;
+use crate::protocol::{Provider, TaskOutcome};
 use serde::{Deserialize, Serialize};
 
 pub const VERSION: u32 = 1;
@@ -30,6 +30,8 @@ pub struct Envelope {
     pub destination: RemoteAgent,
     pub body: String,
     pub parent: Option<Reference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<TaskOutcome>,
     pub hops: u32,
 }
 

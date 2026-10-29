@@ -43,6 +43,34 @@ pub struct Agent {
     pub enabled: bool,
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskOutcome {
+    Succeeded,
+    Failed,
+}
+
+impl TaskOutcome {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl rusqlite::types::FromSql for TaskOutcome {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        match value.as_str()? {
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            _ => Err(rusqlite::types::FromSqlError::InvalidType),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -51,6 +79,7 @@ pub struct Message {
     pub recipient_session: String,
     pub body: String,
     pub parent: Option<String>,
+    pub outcome: Option<TaskOutcome>,
     pub hops: u32,
     pub state: String,
     pub detail: Option<String>,
@@ -81,6 +110,8 @@ pub enum Request {
         body: String,
         #[serde(default)]
         parent: Option<String>,
+        #[serde(default)]
+        outcome: Option<TaskOutcome>,
     },
     History {
         #[serde(default)]

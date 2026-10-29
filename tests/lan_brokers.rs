@@ -139,6 +139,7 @@ fn grant_user(bridge: &Running, peer: &str) {
 fn send(bridge: &Running, destination: &str, body: &str, parent: Option<String>) -> String {
     let id = uuid::Uuid::new_v4().to_string();
     bridge.request(Request::Send {
+        outcome: None,
         id: id.clone(),
         sender: "user".into(),
         recipient: destination.into(),
@@ -204,6 +205,7 @@ async fn discovered_peers_pair_exchange_and_reconnect_without_manual_addresses()
         alice
             .broker
             .request(Request::Send {
+                outcome: None,
                 id: uuid::Uuid::new_v4().to_string(),
                 sender: "user".into(),
                 recipient: format!("{bob_id}/user"),
@@ -370,6 +372,7 @@ async fn discovered_peers_pair_exchange_and_reconnect_without_manual_addresses()
         alice
             .broker
             .request(Request::Send {
+                outcome: None,
                 id: uuid::Uuid::new_v4().to_string(),
                 sender: "user".into(),
                 recipient: "bob/user".into(),

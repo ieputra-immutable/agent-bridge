@@ -2,7 +2,7 @@
 //! It neither creates a broker nor changes the network/trust permission boundary.
 use crate::{
     broker,
-    protocol::{MAX_BODY, MAX_FRAME, Request},
+    protocol::{MAX_BODY, MAX_FRAME, Request, TaskOutcome},
 };
 use anyhow::{Result, ensure};
 use rmcp::{
@@ -61,6 +61,8 @@ struct SendArgs {
     /// Reuse the returned UUID after an ambiguous timeout to prevent duplication.
     id: Option<String>,
     parent: Option<String>,
+    /// Final task report for the parent message: succeeded or failed. Requires parent.
+    outcome: Option<TaskOutcome>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -380,6 +382,7 @@ impl Bridge {
                     recipient: args.to,
                     body: args.body,
                     parent: args.parent,
+                    outcome: args.outcome,
                 })
                 .await
             },

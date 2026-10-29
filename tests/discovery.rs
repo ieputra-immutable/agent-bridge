@@ -20,7 +20,14 @@ fn native_aliases_follow_renames_but_messages_stay_pinned_and_duplicate_names_ar
         .unwrap();
     let mid = id();
     let sent = db
-        .send(&mid, "user", "Native agent with spaces", "first", &None)
+        .send(
+            &mid,
+            "user",
+            "Native agent with spaces",
+            "first",
+            &None,
+            None,
+        )
         .unwrap();
     assert_eq!(sent.recipient_session, first);
     db.observe_codex(&first, Some("Renamed agent"), true)
@@ -126,6 +133,7 @@ async fn observer_discovers_loaded_sessions_and_follows_native_events_without_re
     let sent = bound
         .broker
         .request(Request::Send {
+            outcome: None,
             id: id(),
             sender: "user".into(),
             recipient: "renamed-test".into(),
@@ -164,6 +172,7 @@ async fn default_list_hides_exited_sessions_and_all_preserves_history_and_restar
     bound
         .broker
         .request(Request::Send {
+            outcome: None,
             id: mid.clone(),
             sender: "user".into(),
             recipient: "returning-peer".into(),

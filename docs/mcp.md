@@ -58,7 +58,7 @@ for client scopes and approvals.
 | `connection_status` | Inspect the local broker and peer connections. |
 | `list_agents` | List local sessions by default, or one explicitly selected peer's permitted sessions. |
 | `list_messages`, `get_message` | Inspect message history and delivery state. |
-| `send_message` | Persist a message with an idempotent UUID and optional reply ID. |
+| `send_message` | Persist a message with an idempotent UUID and optional reply ID and task outcome. |
 | `acknowledge_message` | Confirm receipt separately from task completion. |
 | `configure_network` | Explicitly enable or disable networking and LAN discovery. |
 | `open_pairing`, `create_invite`, `connect_peer` | Organize pairing and choose the local session that receives owner prompts. |
@@ -118,6 +118,17 @@ selected action; a request received from a remote agent does not.
 For a send, retain the returned message UUID. If the broker response is ambiguous,
 retry with that exact UUID and the same message rather than generating another.
 Submitted does not mean the other agent read the message or completed a task.
+Acknowledgement confirms receipt only. To mark a reply as the final task report,
+set `parent` to the message being answered and `outcome` to `succeeded` or `failed`:
+
+```json
+{"from":"reviewer","to":"requester","body":"Review complete","parent":"MESSAGE_UUID","outcome":"succeeded"}
+```
+
+`outcome` is optional and requires `parent`. It is the reply sender's report about
+the parent task, separate from delivery state or acknowledgement. Message results
+include `outcome` as null when unset. CLI sends use `--in-reply-to MESSAGE_UUID`
+and `--outcome succeeded` or `--outcome failed`.
 
 ## Approval and transport boundaries
 

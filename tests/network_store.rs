@@ -60,7 +60,7 @@ impl Pair {
     }
     fn send(&self, body: &str) -> Envelope {
         self.a
-            .send_remote(&self.aid, &id(), "user", "bob/user", body, &None)
+            .send_remote(&self.aid, &id(), "user", "bob/user", body, &None, None)
             .unwrap();
         self.a
             .pending_transfers(&self.bid, 100)
@@ -175,6 +175,7 @@ fn reply_uses_original_parent_session_and_correlates_local_ids() {
         "alice/user",
         "answer",
         &Some(local.id),
+        None,
     )
     .unwrap();
     let reply = p.b.pending_transfers(&p.aid, 1).unwrap().pop().unwrap();
@@ -222,11 +223,11 @@ fn immutable_outbound_survives_directory_replacement_and_idempotent_retries() {
         }],
     )
     .unwrap();
-    p.a.send_remote(&p.aid, &env.id, "user", "bob/user", "original", &None)
+    p.a.send_remote(&p.aid, &env.id, "user", "bob/user", "original", &None, None)
         .unwrap();
     assert_eq!(p.a.pending_transfers(&p.bid, 1).unwrap()[0], env);
     assert!(
-        p.a.send_remote(&p.aid, &env.id, "user", "bob/user", "conflict", &None)
+        p.a.send_remote(&p.aid, &env.id, "user", "bob/user", "conflict", &None, None)
             .is_err()
     );
     let next = p.send("new");
@@ -572,4 +573,103 @@ fn retained_history_quota_rejects_completed_message_growth_without_breaking_dedu
             before
         );
     }
+}
+
+#[test]
+fn reply_outcome_survives_wire_storage_and_retries() {
+    use agent_bridge::protocol::TaskOutcome;
+    let p = Pair::new();
+    let env = p.send("task");
+    let encoded = serde_json::to_value(&env).unwrap();
+    assert!(encoded.get("outcome").is_none());
+    let legacy: Envelope = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(legacy.outcome, None);
+    let mut invalid = encoded;
+    invalid["outcome"] = serde_json::json!("complete");
+    assert!(serde_json::from_value::<Envelope>(invalid).is_err());
+    let mut forged = env.clone();
+    forged.outcome = Some(TaskOutcome::Succeeded);
+    assert!(
+        p.b.accept_remote(&p.bid, &p.aid, &forged)
+            .unwrap_err()
+            .to_string()
+            .contains("Outcome requires a reply parent")
+    );
+    assert!(
+        p.a.send_remote(
+            &p.aid,
+            &id(),
+            "user",
+            "bob/user",
+            "report",
+            &None,
+            Some(TaskOutcome::Succeeded)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("Outcome requires a reply parent")
+    );
+    p.b.accept_remote(&p.bid, &p.aid, &env).unwrap();
+    let local = p.b.history(&None, 1).unwrap().pop().unwrap();
+    let parent = Some(local.id);
+    for outcome in [TaskOutcome::Succeeded, TaskOutcome::Failed] {
+        let reply = id();
+        let stored =
+            p.b.send_remote(
+                &p.bid,
+                &reply,
+                "user",
+                "alice/user",
+                "report",
+                &parent,
+                Some(outcome),
+            )
+            .unwrap();
+        assert_eq!(stored.outcome, Some(outcome));
+        assert_eq!(
+            p.b.send_remote(
+                &p.bid,
+                &reply,
+                "user",
+                "alice/user",
+                "report",
+                &parent,
+                Some(outcome)
+            )
+            .unwrap()
+            .id,
+            reply
+        );
+        assert!(
+            p.b.send_remote(
+                &p.bid,
+                &reply,
+                "user",
+                "alice/user",
+                "report",
+                &parent,
+                None
+            )
+            .is_err()
+        );
+        let pending =
+            p.b.pending_transfers(&p.aid, 100)
+                .unwrap()
+                .into_iter()
+                .find(|message| message.id == reply)
+                .unwrap();
+        let encoded = serde_json::to_value(&pending).unwrap();
+        assert_eq!(encoded["outcome"], outcome.label());
+        let decoded: Envelope = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, pending);
+        p.a.accept_remote(&p.aid, &p.bid, &decoded).unwrap();
+        p.a.accept_remote(&p.aid, &p.bid, &decoded).unwrap();
+        let received = p.a.history(&None, 1).unwrap().pop().unwrap();
+        assert_eq!(received.outcome, Some(outcome));
+        assert_eq!(received.parent.as_deref(), Some(env.id.as_str()));
+        let mut conflict = decoded;
+        conflict.outcome = None;
+        assert!(p.a.accept_remote(&p.aid, &p.bid, &conflict).is_err());
+    }
+    assert_eq!(p.a.get(&env.id).unwrap().outcome, None);
 }

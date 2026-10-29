@@ -55,6 +55,7 @@ async fn real_broker_routes_native_claude_frame_and_accepts_correlated_reply() {
     broker::rpc(
         &state,
         &Request::Send {
+            outcome: None,
             id: mid.clone(),
             sender: "user".into(),
             recipient: name.into(),
@@ -97,6 +98,7 @@ async fn real_broker_routes_native_claude_frame_and_accepts_correlated_reply() {
     broker::rpc(
         &state,
         &Request::Send {
+            outcome: None,
             id: reply.clone(),
             sender: name.into(),
             recipient: "user".into(),
@@ -134,6 +136,7 @@ async fn codex_adapter_never_spawns_an_argv_fallback_for_invalid_sessions() {
         enabled: true,
     };
     let msg = Message {
+        outcome: None,
         id: id(),
         sender: "user".into(),
         recipient: agent.name.clone(),

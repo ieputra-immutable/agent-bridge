@@ -206,6 +206,7 @@ async fn two_brokers_deliver_once_to_native_socket_and_sync_acknowledgement_and_
         broker::rpc(
             &alice.state,
             &Request::Send {
+                outcome: None,
                 id: id.clone(),
                 sender: "user".into(),
                 recipient: "bob/reviewer".into(),
@@ -246,6 +247,7 @@ async fn two_brokers_deliver_once_to_native_socket_and_sync_acknowledgement_and_
     broker::rpc(
         &bob.state,
         &Request::Send {
+            outcome: None,
             id: reply_id.clone(),
             sender: "reviewer".into(),
             recipient: format!("{alice_id}/user"),
@@ -311,6 +313,7 @@ async fn queued_transfer_survives_origin_restart_and_destination_offline_period(
     bob.stop().await;
     let id = uuid::Uuid::new_v4().to_string();
     alice.request(Request::Send {
+        outcome: None,
         id: id.clone(),
         sender: "user".into(),
         recipient: "bob/reviewer".into(),
@@ -375,6 +378,7 @@ async fn revocation_blocks_a_durably_received_message_before_native_submission()
     directory(&alice, "reviewer").await;
     let id = uuid::Uuid::new_v4().to_string();
     alice.request(Request::Send {
+        outcome: None,
         id: id.clone(),
         sender: "user".into(),
         recipient: "bob/reviewer".into(),

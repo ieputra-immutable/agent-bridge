@@ -493,15 +493,19 @@ impl Broker {
                 recipient,
                 body,
                 parent,
+                outcome,
             } => {
                 if recipient.contains('/') {
                     let local = Identity::load_or_create(&self.state_dir)?.info().peer_id;
                     self.message_value(
                         &db,
-                        &db.send_remote(&local, &id, &sender, &recipient, &body, &parent)?,
+                        &db.send_remote(&local, &id, &sender, &recipient, &body, &parent, outcome)?,
                     )?
                 } else {
-                    self.message_value(&db, &db.send(&id, &sender, &recipient, &body, &parent)?)?
+                    self.message_value(
+                        &db,
+                        &db.send(&id, &sender, &recipient, &body, &parent, outcome)?,
+                    )?
                 }
             }
             Request::History { agent, limit } => {

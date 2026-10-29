@@ -251,6 +251,7 @@ mod tests {
     }
     fn message() -> Message {
         Message {
+            outcome: None,
             id: uuid::Uuid::new_v4().to_string(),
             recipient_session: "123e4567-e89b-12d3-a456-426614174000".into(),
             sender: "user".into(),

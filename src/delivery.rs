@@ -18,6 +18,9 @@ pub(crate) fn envelope_with_machines(
     machines: &serde_json::Value,
 ) -> String {
     let mut data = json!({"id":msg.id,"from":msg.sender,"to":msg.recipient,"in_reply_to":msg.parent,"hops":msg.hops,"body":msg.body});
+    if let Some(outcome) = msg.outcome {
+        data["outcome"] = json!(outcome);
+    }
     if machines.is_object() {
         data["source_machine"] = machines["source_machine"].clone();
         data["destination_machine"] = machines["destination_machine"].clone();

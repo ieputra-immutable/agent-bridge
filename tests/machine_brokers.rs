@@ -178,6 +178,7 @@ async fn authenticated_machine_names_survive_renaming_with_pinned_queued_deliver
     bob.request(Request::Pause { paused: true });
     let id = uuid::Uuid::new_v4().to_string();
     alice.request(Request::Send {
+        outcome: None,
         id: id.clone(),
         sender: "user".into(),
         recipient: "destination/reviewer".into(),
@@ -244,6 +245,7 @@ async fn authenticated_machine_names_survive_renaming_with_pinned_queued_deliver
     .await;
     let reply = uuid::Uuid::new_v4().to_string();
     bob.request(Request::Send {
+        outcome: None,
         id: reply,
         sender: "reviewer".into(),
         recipient: envelope["sender"].as_str().unwrap().into(),
@@ -403,6 +405,7 @@ async fn peer_without_machine_metadata_still_accepts_v1_message_transfers() {
     assert!(directory["machine_name"].is_null());
     let id = uuid::Uuid::new_v4().to_string();
     source.request(Request::Send {
+        outcome: None,
         id: id.clone(),
         sender: "user".into(),
         recipient: "legacy/user".into(),

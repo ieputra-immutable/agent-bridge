@@ -315,6 +315,7 @@ pub(crate) async fn run(broker: Broker) -> Result<()> {
             let now = crate::db::now();
             let text = notice.text(&broker.state_dir);
             let message = Message {
+                outcome: None,
                 id: uuid::Uuid::new_v4().to_string(),
                 sender: "agent-bridge-pairing".into(),
                 recipient: notice.agent.name.clone(),

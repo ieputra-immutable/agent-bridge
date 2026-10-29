@@ -195,3 +195,95 @@ async fn local_cli_manages_peer_trust_and_explicit_network_lifecycle() {
         peers
     );
 }
+
+#[tokio::test]
+async fn cli_reply_outcome_requires_parent_and_is_returned_by_get_and_history() {
+    let dir = tempfile::Builder::new()
+        .prefix("ab-outcome-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let state = dir.path().join("state");
+    let bound = Broker::bind(state.clone(), "/missing/codex".into()).unwrap();
+    let server = tokio::spawn(broker::serve(bound));
+    json(
+        &state,
+        &["register", "inbox", "worker", "--session", "worker-session"],
+    )
+    .await;
+    let rejected = cli(
+        &state,
+        &[
+            "send",
+            "--from",
+            "worker",
+            "--to",
+            "user",
+            "--message",
+            "report",
+            "--outcome",
+            "succeeded",
+        ],
+    )
+    .await;
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("--in-reply-to"));
+    let parent = json(&state, &["send", "--to", "worker", "--message", "task"]).await;
+    assert!(parent["outcome"].is_null());
+    let parent = parent["id"].as_str().unwrap();
+    let invalid = cli(
+        &state,
+        &[
+            "send",
+            "--from",
+            "worker",
+            "--to",
+            "user",
+            "--message",
+            "report",
+            "--in-reply-to",
+            parent,
+            "--outcome",
+            "complete",
+        ],
+    )
+    .await;
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid value"));
+    for outcome in ["succeeded", "failed"] {
+        let report = json(
+            &state,
+            &[
+                "send",
+                "--from",
+                "worker",
+                "--to",
+                "user",
+                "--message",
+                "report",
+                "--in-reply-to",
+                parent,
+                "--outcome",
+                outcome,
+            ],
+        )
+        .await;
+        assert_eq!(report["outcome"], outcome);
+        let reply = report["id"].as_str().unwrap();
+        let got = json(&state, &["get", reply]).await;
+        assert_eq!(got["outcome"], outcome);
+        assert_eq!(got["parent"], parent);
+        let history = json(&state, &["history", "--agent", "user"]).await;
+        assert_eq!(
+            history
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["id"] == reply)
+                .unwrap()["outcome"],
+            outcome
+        );
+    }
+    assert!(json(&state, &["get", parent]).await["outcome"].is_null());
+    server.abort();
+    let _ = server.await;
+}

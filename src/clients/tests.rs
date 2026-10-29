@@ -17,6 +17,7 @@ fn agent(provider: Provider) -> Agent {
 }
 fn message(agent: &Agent) -> Message {
     Message {
+        outcome: None,
         id: uuid::Uuid::new_v4().to_string(),
         sender: "user".into(),
         recipient: agent.name.clone(),
@@ -148,5 +149,31 @@ async fn invalid_socket_failures_propagate_for_messages_and_both_notice_types() 
         let outcome = deliver_notice(&agent, &msg, notice).await;
         assert_eq!(outcome.state, ordinary.state);
         assert_eq!(outcome.detail, ordinary.detail);
+    }
+}
+
+#[test]
+fn native_reply_text_includes_optional_task_outcome() {
+    use crate::protocol::TaskOutcome;
+    for provider in [Provider::Claude, Provider::Codex] {
+        let agent = agent(provider);
+        let mut msg = message(&agent);
+        msg.parent = Some(uuid::Uuid::new_v4().to_string());
+        let adapter = Adapter::for_provider(&agent.provider).unwrap();
+        let text = adapter.message_content(&msg, Path::new("/tmp"), &serde_json::Value::Null);
+        assert!(!text.contains("outcome") && !text.contains("Outcome:"));
+        for outcome in [TaskOutcome::Succeeded, TaskOutcome::Failed] {
+            msg.outcome = Some(outcome);
+            let text = adapter.message_content(&msg, Path::new("/tmp"), &serde_json::Value::Null);
+            if agent.provider == Provider::Claude {
+                assert!(text.contains(&format!("\nOutcome: {}\n", outcome.label())));
+                assert!(text.contains(&format!("Message reference: {}", msg.id)));
+            } else {
+                let data: serde_json::Value =
+                    serde_json::from_str(text.lines().nth(1).unwrap()).unwrap();
+                assert_eq!(data["outcome"], outcome.label());
+                assert_eq!(data["in_reply_to"], msg.parent.as_deref().unwrap());
+            }
+        }
     }
 }

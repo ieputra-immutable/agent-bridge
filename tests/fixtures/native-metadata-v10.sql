@@ -5,3 +5,5 @@ CREATE TABLE native_codex(session TEXT PRIMARY KEY,display_name TEXT);
 INSERT INTO native_claude SELECT session,display_name FROM session_metadata WHERE provider='claude';
 INSERT INTO native_codex SELECT session,display_name FROM session_metadata WHERE provider='codex';
 DROP TABLE session_metadata;
+
+ALTER TABLE messages DROP COLUMN outcome;

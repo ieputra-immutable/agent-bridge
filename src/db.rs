@@ -1,6 +1,6 @@
 use crate::{
     network::trust::{Grant, Peer, Permission},
-    protocol::{Agent, MAX_BODY, Message, Provider},
+    protocol::{Agent, MAX_BODY, Message, Provider, TaskOutcome},
 };
 use anyhow::{Context, Result, bail, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -33,6 +33,7 @@ fn message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         detail: r.get(8)?,
         created: r.get(9)?,
         updated: r.get(10)?,
+        outcome: r.get(11)?,
     })
 }
 
@@ -465,7 +466,12 @@ impl Db {
         recipient: &str,
         body: &str,
         parent: &Option<String>,
+        outcome: Option<TaskOutcome>,
     ) -> Result<Message> {
+        ensure!(
+            outcome.is_none() || parent.is_some(),
+            "Outcome requires a reply parent"
+        );
         uuid::Uuid::parse_str(id).context("Message ID must be a UUID")?;
         ensure!(
             !body.trim().is_empty() && body.len() <= MAX_BODY,
@@ -479,7 +485,8 @@ impl Db {
                 old.sender == sender
                     && old.recipient == recipient
                     && old.body == body
-                    && old.parent == *parent,
+                    && old.parent == *parent
+                    && old.outcome == outcome,
                 "Message ID already exists with different contents"
             );
             return Ok(old);
@@ -507,8 +514,18 @@ impl Db {
         ensure!(count < 1000, "Queue is full (1000 pending messages)");
         let t = now();
         self.conn.execute(
-            "INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',NULL,?8,?8)",
-            params![id, sender, recipient, target.session, body, parent, hops, t],
+            "INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',NULL,?8,?8,?9)",
+            params![
+                id,
+                sender,
+                recipient,
+                target.session,
+                body,
+                parent,
+                hops,
+                t,
+                outcome.map(TaskOutcome::label)
+            ],
         )?;
         self.get(id)
     }

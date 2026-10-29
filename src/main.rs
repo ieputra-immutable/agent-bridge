@@ -1,7 +1,7 @@
 use agent_bridge::{
     broker, hook,
     network::trust::Permission,
-    protocol::{Agent, Provider, Request},
+    protocol::{Agent, Provider, Request, TaskOutcome},
     service,
 };
 use anyhow::{Context, Result};
@@ -127,6 +127,9 @@ enum Commands {
         id: Option<String>,
         #[arg(long)]
         in_reply_to: Option<String>,
+        /// Mark this reply as the final task report for its parent.
+        #[arg(long, value_enum, requires = "in_reply_to")]
+        outcome: Option<TaskOutcome>,
     },
     History {
         #[arg(long)]
@@ -773,6 +776,7 @@ async fn main() -> Result<()> {
             message,
             id,
             in_reply_to,
+            outcome,
         } => {
             let body = match message {
                 Some(s) => s,
@@ -793,6 +797,7 @@ async fn main() -> Result<()> {
                 recipient: to,
                 body,
                 parent: in_reply_to,
+                outcome,
             }
         }
         Commands::History { agent, limit } => Request::History { agent, limit },

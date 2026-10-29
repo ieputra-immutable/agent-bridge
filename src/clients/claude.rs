@@ -69,8 +69,12 @@ pub(crate) fn claude_content(msg: &Message, machines: &serde_json::Value) -> Str
         name
     };
     let body = escape_claude_body(&msg.body);
+    let outcome = msg
+        .outcome
+        .map(|value| format!("\nOutcome: {}", value.label()))
+        .unwrap_or_default();
     format!(
-        "<cross-session-message from-name=\"{name}\">\n{body}\n\nMessage reference: {}\nReply to: {}\nDelivered to: {}\n</cross-session-message>",
+        "<cross-session-message from-name=\"{name}\">\n{body}\n\nMessage reference: {}\nReply to: {}\nDelivered to: {}{outcome}\n</cross-session-message>",
         msg.id, msg.sender, msg.recipient
     )
 }
@@ -217,6 +221,7 @@ mod tests {
 
     fn message(body: &str) -> Message {
         Message {
+            outcome: None,
             id: "a13cb820-de5d-4773-b7ab-fd5c939cfd92".into(),
             sender: "codex-researcher".into(),
             recipient: "claude-reviewer".into(),

@@ -289,3 +289,47 @@ fn interrupted_metadata_copy_leaves_only_the_old_registry_and_can_retry() {
         100006
     );
 }
+
+#[test]
+fn version_eleven_adds_nullable_checked_outcome_and_preserves_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut conn = Connection::open(&path).unwrap();
+    conn.execute_batch(LEGACY).unwrap();
+    agent_bridge::migrations::migrate(&mut conn).unwrap();
+    conn.execute_batch("ALTER TABLE messages DROP COLUMN outcome; PRAGMA user_version=11;")
+        .unwrap();
+    let before = durable_rows(&conn);
+    agent_bridge::migrations::migrate(&mut conn).unwrap();
+    assert_eq!(durable_rows(&conn), before);
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT count(*) FROM messages WHERE outcome IS NULL",
+            [],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        conn.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+            .unwrap(),
+        12
+    );
+    for outcome in ["succeeded", "failed"] {
+        conn.execute(
+            "UPDATE messages SET outcome=? WHERE id='queued-id'",
+            [outcome],
+        )
+        .unwrap();
+    }
+    assert!(
+        conn.execute(
+            "UPDATE messages SET outcome='complete' WHERE id='queued-id'",
+            []
+        )
+        .is_err()
+    );
+    conn.execute("UPDATE messages SET outcome=NULL", [])
+        .unwrap();
+}

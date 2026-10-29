@@ -23,12 +23,18 @@ fn duplicate_send_is_idempotent_but_conflicting_reuse_is_rejected() {
     let mut db = Db::open(&dbpath).unwrap();
     db.register(&agent("worker"), false).unwrap();
     let mid = id();
-    db.send(&mid, "user", "worker", "first", &None).unwrap();
+    db.send(&mid, "user", "worker", "first", &None, None)
+        .unwrap();
     assert_eq!(
-        db.send(&mid, "user", "worker", "first", &None).unwrap().id,
+        db.send(&mid, "user", "worker", "first", &None, None)
+            .unwrap()
+            .id,
         mid
     );
-    assert!(db.send(&mid, "user", "worker", "different", &None).is_err());
+    assert!(
+        db.send(&mid, "user", "worker", "different", &None, None)
+            .is_err()
+    );
     assert_eq!(db.history(&None, 50).unwrap().len(), 1);
 }
 
@@ -40,8 +46,10 @@ fn crash_preserves_queued_and_quarantines_in_flight() {
     db.register(&agent("worker"), false).unwrap();
     let first = id();
     let second = id();
-    db.send(&first, "user", "worker", "first", &None).unwrap();
-    db.send(&second, "user", "worker", "second", &None).unwrap();
+    db.send(&first, "user", "worker", "first", &None, None)
+        .unwrap();
+    db.send(&second, "user", "worker", "second", &None, None)
+        .unwrap();
     assert_eq!(db.claim().unwrap().unwrap().0.id, first);
     drop(db);
     let db = Db::open(&path).unwrap();
@@ -58,7 +66,7 @@ fn recipient_replacement_never_redirects_pending_work() {
     let old = agent("worker");
     db.register(&old, false).unwrap();
     let mid = id();
-    db.send(&mid, "user", "worker", "for old session", &None)
+    db.send(&mid, "user", "worker", "for old session", &None, None)
         .unwrap();
     let new = agent("worker");
     assert!(db.register(&new, false).is_err());
@@ -80,9 +88,9 @@ fn one_in_flight_per_recipient_preserves_fifo_without_blocking_other_agents() {
     let a1 = id();
     let a2 = id();
     let b1 = id();
-    db.send(&a1, "user", "a", "a1", &None).unwrap();
-    db.send(&a2, "user", "a", "a2", &None).unwrap();
-    db.send(&b1, "user", "b", "b1", &None).unwrap();
+    db.send(&a1, "user", "a", "a1", &None, None).unwrap();
+    db.send(&a2, "user", "a", "a2", &None, None).unwrap();
+    db.send(&b1, "user", "b", "b1", &None, None).unwrap();
     assert_eq!(db.claim().unwrap().unwrap().0.id, a1);
     assert_eq!(db.claim().unwrap().unwrap().0.id, b1);
     assert!(db.claim().unwrap().is_none());
@@ -96,7 +104,8 @@ fn fast_ack_cannot_be_overwritten_by_transport_completion() {
     let mut db = Db::open(&temp.path().join("db")).unwrap();
     db.register(&agent("worker"), false).unwrap();
     let mid = id();
-    db.send(&mid, "user", "worker", "message", &None).unwrap();
+    db.send(&mid, "user", "worker", "message", &None, None)
+        .unwrap();
     db.claim().unwrap();
     assert!(db.ack(&mid, "user").is_err());
     db.ack(&mid, "worker").unwrap();
@@ -112,7 +121,8 @@ fn pause_and_offline_registration_hold_work_until_resume() {
     let mut db = Db::open(&temp.path().join("db")).unwrap();
     let worker = agent("worker");
     db.register(&worker, false).unwrap();
-    db.send(&id(), "user", "worker", "wait", &None).unwrap();
+    db.send(&id(), "user", "worker", "wait", &None, None)
+        .unwrap();
     db.pause(true).unwrap();
     assert!(db.claim().unwrap().is_none());
     db.pause(false).unwrap();
@@ -129,16 +139,23 @@ fn replies_are_correlated_and_bounded() {
     db.register(&agent("a"), false).unwrap();
     db.register(&agent("b"), false).unwrap();
     let mut parent = id();
-    db.send(&parent, "a", "b", "start", &None).unwrap();
+    db.send(&parent, "a", "b", "start", &None, None).unwrap();
     assert!(
-        db.send(&id(), "a", "b", "forged parent", &Some(parent.clone()))
-            .is_err()
+        db.send(
+            &id(),
+            "a",
+            "b",
+            "forged parent",
+            &Some(parent.clone()),
+            None
+        )
+        .is_err()
     );
     let (mut sender, mut recipient) = ("b", "a");
     for hop in 1..=8 {
         let next = id();
         assert_eq!(
-            db.send(&next, sender, recipient, "reply", &Some(parent))
+            db.send(&next, sender, recipient, "reply", &Some(parent), None)
                 .unwrap()
                 .hops,
             hop
@@ -147,7 +164,7 @@ fn replies_are_correlated_and_bounded() {
         std::mem::swap(&mut sender, &mut recipient);
     }
     assert!(
-        db.send(&id(), sender, recipient, "loop", &Some(parent))
+        db.send(&id(), sender, recipient, "loop", &Some(parent), None)
             .is_err()
     );
 }
@@ -158,7 +175,8 @@ fn submitted_requires_explicit_duplicate_override_and_queued_can_cancel() {
     let mut db = Db::open(&temp.path().join("db")).unwrap();
     db.register(&agent("worker"), false).unwrap();
     let mid = id();
-    db.send(&mid, "user", "worker", "message", &None).unwrap();
+    db.send(&mid, "user", "worker", "message", &None, None)
+        .unwrap();
     db.claim().unwrap();
     db.finish(&mid, "submitted", "sent").unwrap();
     assert!(db.retry(&mid, false).is_err());
@@ -166,4 +184,61 @@ fn submitted_requires_explicit_duplicate_override_and_queued_can_cancel() {
     db.retry(&mid, true).unwrap();
     db.cancel(&mid).unwrap();
     assert!(db.claim().unwrap().is_none());
+}
+
+#[test]
+fn reply_outcome_is_durable_and_part_of_idempotency() {
+    use agent_bridge::protocol::TaskOutcome;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let mut db = Db::open(&path).unwrap();
+    db.register(&agent("worker"), false).unwrap();
+    assert!(
+        db.send(
+            &id(),
+            "worker",
+            "user",
+            "done",
+            &None,
+            Some(TaskOutcome::Succeeded)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("Outcome requires a reply parent")
+    );
+    let parent = id();
+    db.send(&parent, "user", "worker", "task", &None, None)
+        .unwrap();
+    for outcome in [TaskOutcome::Succeeded, TaskOutcome::Failed] {
+        let reply = id();
+        let parent = Some(parent.clone());
+        let sent = db
+            .send(&reply, "worker", "user", "report", &parent, Some(outcome))
+            .unwrap();
+        assert_eq!(sent.outcome, Some(outcome));
+        assert_eq!(
+            db.send(&reply, "worker", "user", "report", &parent, Some(outcome))
+                .unwrap()
+                .id,
+            reply
+        );
+        for conflicting in [
+            None,
+            Some(if outcome == TaskOutcome::Succeeded {
+                TaskOutcome::Failed
+            } else {
+                TaskOutcome::Succeeded
+            }),
+        ] {
+            assert!(
+                db.send(&reply, "worker", "user", "report", &parent, conflicting)
+                    .is_err()
+            );
+        }
+        drop(db);
+        db = Db::open(&path).unwrap();
+        assert_eq!(db.get(&reply).unwrap().outcome, Some(outcome));
+        assert_eq!(db.history(&None, 1).unwrap()[0].outcome, Some(outcome));
+        assert_eq!(db.get(parent.as_ref().unwrap()).unwrap().outcome, None);
+    }
 }

@@ -2,7 +2,7 @@
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, TransactionBehavior};
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 const BASE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS agents(name TEXT PRIMARY KEY, provider TEXT NOT NULL, session TEXT NOT NULL, endpoint TEXT NOT NULL, enabled INTEGER NOT NULL);
@@ -132,6 +132,10 @@ INSERT INTO session_metadata SELECT 'codex',session,display_name FROM native_cod
 DROP TABLE native_claude;
 DROP TABLE native_codex;")?;
         tx.pragma_update(None, "user_version", 11)?;
+    }
+    if version < 12 {
+        tx.execute_batch("ALTER TABLE messages ADD COLUMN outcome TEXT CHECK(outcome IN ('succeeded','failed'));")?;
+        tx.pragma_update(None, "user_version", 12)?;
     }
     tx.commit()?;
     Ok(())

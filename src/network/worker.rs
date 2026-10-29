@@ -776,6 +776,7 @@ mod tests {
         };
         let request = WireRequest::new(Operation::Send {
             envelope: Box::new(Envelope {
+                outcome: None,
                 origin_peer: peer.to_string(),
                 id: uuid::Uuid::new_v4().to_string(),
                 source: agent.clone(),

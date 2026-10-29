@@ -69,6 +69,13 @@ agent-bridge send --from reviewer --to PEER_ID/source-agent \
 
 A correlated reply pins the original source session from the received envelope and does not require rediscovery. Explicit replies can wake agents. Receipt and acknowledgement synchronization only updates records. The eight-hop conversation limit remains in force.
 
+A final report can set `--outcome succeeded` or `--outcome failed` together with
+`--in-reply-to`. Outcome belongs to the reply and reports the sender's result for
+the parent task; acknowledgement remains receipt-only. The optional `outcome`
+envelope field is omitted when unset, preserving ordinary messaging with older
+peers. Older peers reject unknown envelope fields, so replies carrying an outcome
+require a peer that supports it. No protocol version change is made.
+
 ## Interpret receipts and native status
 
 Outbound remote `get` results include a separate `transfer` object:

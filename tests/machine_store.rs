@@ -133,6 +133,7 @@ fn renames_preserve_identity_immutable_queued_envelopes_and_remote_routing() {
         "workstation/reviewer",
         "hello",
         &None,
+        None,
     )
     .unwrap();
     let conn = Connection::open(&path).unwrap();
@@ -182,7 +183,7 @@ fn schema_four_upgrade_preserves_data_and_initializes_only_missing_name() {
     )
     .unwrap();
     let mid = uuid::Uuid::new_v4().to_string();
-    db.send(&mid, "user", "receiver", "preserved", &None)
+    db.send(&mid, "user", "receiver", "preserved", &None, None)
         .unwrap();
     let peer = id();
     db.pair_peer(&peer, &peer, Some("chosen-alias")).unwrap();

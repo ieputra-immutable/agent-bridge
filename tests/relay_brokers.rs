@@ -54,6 +54,7 @@ impl Running {
     fn send(&self, to: &str, body: &str, parent: Option<String>) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         self.request(Request::Send {
+            outcome: None,
             id: id.clone(),
             sender: "user".into(),
             recipient: to.into(),

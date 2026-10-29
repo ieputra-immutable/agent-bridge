@@ -8,7 +8,7 @@ use crate::{
             WireResponse,
         },
     },
-    protocol::{MAX_BODY, MAX_FRAME, Message},
+    protocol::{MAX_BODY, MAX_FRAME, Message, TaskOutcome},
 };
 use anyhow::{Context, Result, bail, ensure};
 use libp2p::Multiaddr;
@@ -233,6 +233,7 @@ impl Db {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn send_remote(
         &self,
         local_peer: &str,
@@ -241,7 +242,12 @@ impl Db {
         recipient: &str,
         body: &str,
         parent: &Option<String>,
+        outcome: Option<TaskOutcome>,
     ) -> Result<Message> {
+        ensure!(
+            outcome.is_none() || parent.is_some(),
+            "Outcome requires a reply parent"
+        );
         canonical_peer(local_peer)?;
         uuid::Uuid::parse_str(id).context("Message ID must be a UUID")?;
         ensure!(
@@ -255,7 +261,8 @@ impl Db {
                     .as_ref()
                     .is_some_and(|(s, r)| s == sender && r == recipient)
                     && old.body == body
-                    && old.parent == *parent,
+                    && old.parent == *parent
+                    && old.outcome == outcome,
                 "Message ID already exists with different contents"
             );
             return Ok(old);
@@ -327,6 +334,7 @@ impl Db {
             destination,
             body: body.into(),
             parent: reference,
+            outcome,
             hops,
         };
         ensure!(
@@ -341,7 +349,7 @@ impl Db {
         let tx = self.conn.unchecked_transaction()?;
         let t = now();
         tx.execute(
-            "INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',NULL,?8,?8)",
+            "INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',NULL,?8,?8,?9)",
             params![
                 id,
                 source.name,
@@ -350,7 +358,8 @@ impl Db {
                 body,
                 parent,
                 hops,
-                t
+                t,
+                outcome.map(TaskOutcome::label)
             ],
         )?;
         tx.execute("INSERT INTO outbound_transfers(id,peer_id,envelope,state,requested_sender,requested_recipient) VALUES(?,?,?,'pending',?,?)", params![id,peer.peer_id,serde_json::to_string(&envelope)?,sender,recipient])?;
@@ -480,6 +489,10 @@ impl Db {
         authenticated_peer: &str,
         envelope: &Envelope,
     ) -> Result<()> {
+        ensure!(
+            envelope.outcome.is_none() || envelope.parent.is_some(),
+            "Outcome requires a reply parent"
+        );
         self.require_peer(authenticated_peer)?;
         canonical_peer(local_peer)?;
         ensure!(
@@ -570,7 +583,7 @@ impl Db {
         check_retained_capacity(&tx, authenticated_peer, envelope.body.len() + encoded.len())?;
         let t = now();
         tx.execute(
-            "INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',NULL,?8,?8)",
+            "INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',NULL,?8,?8,?9)",
             params![
                 local_id,
                 format!("{}/{}", authenticated_peer, envelope.source.name),
@@ -579,7 +592,8 @@ impl Db {
                 envelope.body,
                 parent_local,
                 envelope.hops,
-                t
+                t,
+                envelope.outcome.map(TaskOutcome::label)
             ],
         )?;
         tx.execute(

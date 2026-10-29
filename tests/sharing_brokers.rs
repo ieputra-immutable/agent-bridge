@@ -54,6 +54,7 @@ impl Running {
     fn send(&self, recipient: &str, body: &str, parent: Option<String>) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         self.request(Request::Send {
+            outcome: None,
             id: id.clone(),
             sender: "user".into(),
             recipient: recipient.into(),
@@ -214,6 +215,7 @@ async fn shared_sessions_exchange_acknowledged_replies_and_enforce_unshare_acros
     assert!(
         a.broker
             .request(Request::Send {
+                outcome: None,
                 id: uuid::Uuid::new_v4().to_string(),
                 sender: "user".into(),
                 recipient: "bob/private".into(),
@@ -264,6 +266,7 @@ async fn shared_sessions_exchange_acknowledged_replies_and_enforce_unshare_acros
     assert!(
         a.broker
             .request(Request::Send {
+                outcome: None,
                 id: uuid::Uuid::new_v4().to_string(),
                 sender: "user".into(),
                 recipient: "bob/user".into(),
