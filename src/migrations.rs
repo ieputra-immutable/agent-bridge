@@ -2,7 +2,7 @@
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, TransactionBehavior};
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 const BASE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS agents(name TEXT PRIMARY KEY, provider TEXT NOT NULL, session TEXT NOT NULL, endpoint TEXT NOT NULL, enabled INTEGER NOT NULL);
@@ -124,6 +124,14 @@ CREATE TRIGGER inbound_usage_delete AFTER DELETE ON inbound_transfers BEGIN
  UPDATE inbound_usage SET messages=messages-1,bytes=bytes-length(CAST(OLD.envelope AS BLOB))-(SELECT length(CAST(body AS BLOB)) FROM messages WHERE id=OLD.local_id) WHERE peer_id=OLD.peer_id;
 END;")?;
         tx.pragma_update(None, "user_version", 10)?;
+    }
+    if version < 11 {
+        tx.execute_batch("CREATE TABLE session_metadata(provider TEXT NOT NULL,session TEXT NOT NULL,display_name TEXT,PRIMARY KEY(provider,session));
+INSERT INTO session_metadata SELECT 'claude',session,display_name FROM native_claude;
+INSERT INTO session_metadata SELECT 'codex',session,display_name FROM native_codex;
+DROP TABLE native_claude;
+DROP TABLE native_codex;")?;
+        tx.pragma_update(None, "user_version", 11)?;
     }
     tx.commit()?;
     Ok(())

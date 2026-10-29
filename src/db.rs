@@ -195,12 +195,7 @@ impl Db {
             })?
             .map(|row| {
                 let (provider, session, permission) = row?;
-                let provider = match provider.as_str() {
-                    "claude" => Provider::Claude,
-                    "codex" => Provider::Codex,
-                    "inbox" => Provider::Inbox,
-                    _ => bail!("Invalid stored grant provider"),
-                };
+                let provider = provider.parse::<Provider>()?;
                 let permission = match permission.as_str() {
                     "discover" => Permission::Discover,
                     "send" => Permission::Send,
@@ -331,12 +326,7 @@ impl Db {
                 )
                 .optional()?
                 .context("Unknown agent; register it first")?;
-        let provider = match provider.as_str() {
-            "claude" => Provider::Claude,
-            "codex" => Provider::Codex,
-            "inbox" => Provider::Inbox,
-            _ => bail!("Unknown stored provider"),
-        };
+        let provider = provider.parse::<Provider>()?;
         Ok(Agent {
             name,
             provider,
@@ -361,15 +351,14 @@ impl Db {
     }
 
     pub fn display_name(&self, provider: &Provider, session: &str) -> Result<Option<String>> {
+        if crate::clients::Adapter::for_provider(provider).is_none() {
+            return Ok(None);
+        }
         Ok(self
             .conn
             .query_row(
-                match provider {
-                    Provider::Claude => "SELECT display_name FROM native_claude WHERE session=?",
-                    Provider::Codex => "SELECT display_name FROM native_codex WHERE session=?",
-                    Provider::Inbox => return Ok(None),
-                },
-                [session],
+                "SELECT display_name FROM session_metadata WHERE provider=? AND session=?",
+                params![provider.label(), session],
                 |r| r.get::<_, Option<String>>(0),
             )
             .optional()?
@@ -387,19 +376,20 @@ impl Db {
             return self.agent(name);
         }
         let (provider, title) = match name.split_once(':') {
-            Some((p @ ("claude" | "codex"), title)) => (Some(p), title),
+            Some((p, title)) => (Some(p.parse::<Provider>()?), title),
             _ => (None, name),
         };
         let mut s = self.conn.prepare(
-            "SELECT a.name FROM agents a JOIN (
-            SELECT 'codex' AS provider,session,display_name FROM native_codex
-            UNION ALL SELECT 'claude',session,display_name FROM native_claude
-        ) n ON a.session=n.session AND a.provider=n.provider
+            "SELECT a.name FROM agents a JOIN session_metadata n
+        ON a.session=n.session AND a.provider=n.provider
         WHERE a.name=n.provider||'-'||n.session AND a.enabled=1 AND n.display_name=?1
         AND (?2 IS NULL OR n.provider=?2) ORDER BY a.name",
         )?;
         let names = s
-            .query_map(params![title, provider], |r| r.get::<_, String>(0))?
+            .query_map(
+                params![title, provider.as_ref().map(Provider::label)],
+                |r| r.get::<_, String>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         ensure!(
             names.len() <= 1,
@@ -419,7 +409,7 @@ impl Db {
         name: Option<&str>,
         enabled: bool,
     ) -> Result<()> {
-        let routing_name = format!("codex-{session}");
+        let routing_name = crate::clients::lifecycle::routing_name(&Provider::Codex, session);
         self.register(
             &Agent {
                 name: routing_name,
@@ -430,17 +420,32 @@ impl Db {
             },
             false,
         )?;
-        self.conn.execute("INSERT INTO native_codex(session,display_name) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET display_name=excluded.display_name",params![session,name])?;
+        self.observe_session_name(&Provider::Codex, session, name)?;
         Ok(())
     }
 
     pub fn observe_claude_name(&self, session: &str, name: &str) -> Result<()> {
-        self.conn.execute("INSERT INTO native_claude(session,display_name) VALUES(?,?) ON CONFLICT(session) DO UPDATE SET display_name=excluded.display_name", params![session,name])?;
+        self.observe_session_name(&Provider::Claude, session, Some(name))
+    }
+
+    /// Optional display metadata never registers or enables a session.
+    pub fn observe_session_name(
+        &self,
+        provider: &Provider,
+        session: &str,
+        name: Option<&str>,
+    ) -> Result<()> {
+        ensure!(
+            crate::clients::Adapter::for_provider(provider).is_some(),
+            "Inbox has no native display metadata"
+        );
+        crate::clients::validate_session(provider, session)?;
+        self.conn.execute("INSERT INTO session_metadata(provider,session,display_name) VALUES(?,?,?) ON CONFLICT(provider,session) DO UPDATE SET display_name=excluded.display_name", params![provider.label(),session,name])?;
         Ok(())
     }
 
     pub fn codex_offline(&self, session: Option<&str>) -> Result<()> {
-        self.conn.execute("UPDATE agents SET enabled=0 WHERE provider='codex' AND name='codex-'||session AND session IN (SELECT session FROM native_codex) AND (?1 IS NULL OR session=?1)",[session])?;
+        self.conn.execute("UPDATE agents SET enabled=0 WHERE provider='codex' AND name='codex-'||session AND (?1 IS NULL OR session=?1)",[session])?;
         Ok(())
     }
 

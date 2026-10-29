@@ -482,6 +482,8 @@ fn retained_history_accounts_utf8_body_copies_and_survives_schema_nine_upgrade()
         .unwrap(),
         expected
     );
+    conn.execute_batch(include_str!("fixtures/native-metadata-v10.sql"))
+        .unwrap();
     conn.execute_batch("DROP TRIGGER inbound_usage_insert; DROP TRIGGER inbound_usage_delete; DROP TABLE inbound_usage; PRAGMA user_version=9;").unwrap();
     drop(conn);
     p.b = Db::open(&p.bpath).unwrap();

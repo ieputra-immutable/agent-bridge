@@ -11,6 +11,19 @@ pub enum Provider {
     Inbox,
 }
 
+impl std::str::FromStr for Provider {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
+            "inbox" => Ok(Self::Inbox),
+            _ => anyhow::bail!("Unknown provider: {value}"),
+        }
+    }
+}
+
 impl Provider {
     pub fn label(&self) -> &'static str {
         match self {

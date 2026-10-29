@@ -17,7 +17,7 @@ Database registration independently checks session identity, including discovery
 registrations. Remote directory/envelope validation reuses the same client session
 rules, keeping its additional length and control-character restrictions; remote
 records never carry a native socket endpoint. Existing UUID syntax acceptance,
-provider strings, stable routing names, storage tables, and wire formats remain
+provider strings, stable routing names, and wire formats remain
 unchanged.
 
 Claude ordinary messages retain its native peer wrapper, sanitized sender display
@@ -39,3 +39,19 @@ its native validation and transport, lifecycle/discovery wiring, and capability
 mapping. Notification providers must use capabilities rather than new provider
 whitelists. Add adapter contracts alongside `tests/clients_contracts.rs` and the
 private `clients` tests; retain real socket and mock-daemon integration coverage.
+
+Native display metadata is stored in `session_metadata`, keyed by provider and
+native session ID. It is optional and independent of lifecycle registration:
+metadata alone never enables a destination. Exact registered aliases take
+precedence; otherwise display names resolve only to enabled automatic
+`provider-session` routes. Use `provider:title` to qualify a title; duplicate
+titles within that provider remain ambiguous. Renames update metadata without
+changing route identity, messages, acknowledgements, or session grants.
+
+Schema version 11 transactionally copies Claude and Codex titles (including NULL
+and empty titles) into this shared table and removes their old tables. Reopening
+is idempotent. Older binaries reject this newer numbered schema; downgrading
+requires restoring the matching pre-upgrade database backup and binary together.
+There is no automatic down migration or compatibility with simultaneous older
+writers. Remote wire schemas are unchanged. Adding an adapter needs no separate
+title table or title lookup UNION.
