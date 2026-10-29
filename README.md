@@ -114,6 +114,7 @@ Then ask your agents:
 > Keep our shared board up to date with a Markdown table. Include one row per
 > agent with its task, status, whether it needs me, and a brief note. Update your
 > own row when work changes and preserve other agents' entries.
+> Write links as `[label](url)`.
 
 Agents use `read_board` and `update_board` to apply atomic, revision-checked edits.
 The TUI renders the document live, including Markdown tables. Use arrow keys or

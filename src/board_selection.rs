@@ -5,6 +5,69 @@ use ratatui::{
     style::{Color, Style},
     text::Span,
 };
+use std::num::NonZeroU16;
+
+#[derive(Clone, Default)]
+pub(crate) struct Hyperlinks {
+    cells: Vec<(Position, usize)>,
+    urls: Vec<String>,
+}
+impl Hyperlinks {
+    pub(crate) fn new(mask: &Buffer, urls: &[String]) -> Self {
+        let mut cells = Vec::new();
+        for y in mask.area.top()..mask.area.bottom() {
+            for x in mask.area.left()..mask.area.right() {
+                if let Color::Rgb(red, green, blue) = mask[(x, y)].fg {
+                    let id =
+                        (usize::from(red) << 16) | (usize::from(green) << 8) | usize::from(blue);
+                    if id > 0 && id <= urls.len() {
+                        cells.push((Position::new(x, y), id - 1));
+                    }
+                }
+            }
+        }
+        Self {
+            cells,
+            urls: urls.to_vec(),
+        }
+    }
+
+    pub(crate) fn paint(&self, buffer: &mut Buffer) {
+        let mut cells = self.cells.iter().peekable();
+        while let Some(&(start, link)) = cells.next() {
+            let cell = &buffer[start];
+            let style = cell.style();
+            let mut text = cell.symbol().to_owned();
+            let mut end = start.x + cell_width(cell);
+            while let Some(&&(point, next_link)) = cells.peek() {
+                if point.y != start.y || point.x > end || next_link != link {
+                    break;
+                }
+                if point.x < end {
+                    cells.next();
+                    continue;
+                }
+                let cell = &buffer[point];
+                if cell.style() != style {
+                    break;
+                }
+                text.push_str(cell.symbol());
+                end += cell_width(cell);
+                cells.next();
+            }
+            let width = NonZeroU16::new(end - start.x).unwrap();
+            buffer[start]
+                .set_symbol(&format!(
+                    "\x1b]8;;{}\x1b\\{text}\x1b]8;;\x1b\\",
+                    self.urls[link]
+                ))
+                .set_diff_option(CellDiffOption::ForcedWidth(width));
+            for x in start.x + 1..end {
+                buffer[(x, start.y)].set_diff_option(CellDiffOption::Skip);
+            }
+        }
+    }
+}
 
 // A pathological terminal size must not cause another unbounded buffer clone.
 const MAX_VIEWPORT_CELLS: usize = 256 * 1024;
@@ -12,6 +75,7 @@ const MAX_VIEWPORT_CELLS: usize = 256 * 1024;
 #[derive(Clone)]
 pub(crate) struct Viewport {
     buffer: Buffer,
+    links: Hyperlinks,
 }
 impl Viewport {
     pub(crate) fn capture(buffer: &Buffer, area: Rect) -> Option<Self> {
@@ -27,7 +91,14 @@ impl Viewport {
                 frozen[(x, y)] = buffer[(x, y)].clone();
             }
         }
-        Some(Self { buffer: frozen })
+        Some(Self {
+            buffer: frozen,
+            links: Hyperlinks::default(),
+        })
+    }
+
+    pub(crate) fn set_links(&mut self, links: Hyperlinks) {
+        self.links = links;
     }
 
     pub(crate) fn area(&self) -> Rect {
@@ -123,6 +194,7 @@ impl Selection {
                 x = next;
             }
         }
+        self.viewport.links.paint(buffer);
     }
 
     /// Finishing a click or a drag returned to its anchor never changes a clipboard.
