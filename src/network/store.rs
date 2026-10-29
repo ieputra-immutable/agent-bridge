@@ -60,6 +60,12 @@ fn validate_agent(agent: &RemoteAgent) -> Result<()> {
     Ok(())
 }
 
+// Route aliases share authority only through the exact native identity. Reply
+// destinations remain pinned separately to the parent's original full route.
+fn same_session(left: &RemoteAgent, right: &RemoteAgent) -> bool {
+    left.provider == right.provider && left.session == right.session
+}
+
 fn remote(agent: &crate::protocol::Agent) -> RemoteAgent {
     RemoteAgent {
         name: agent.name.clone(),
@@ -219,10 +225,24 @@ impl Db {
     }
 
     pub fn export_agents(&self, peer: &str) -> Result<Vec<RemoteAgent>> {
+        self.export_agents_supported(peer, &["claude".into(), "codex".into(), "inbox".into()])
+    }
+
+    pub fn export_agents_supported(
+        &self,
+        peer: &str,
+        providers: &[String],
+    ) -> Result<Vec<RemoteAgent>> {
+        super::wire::validate_providers(providers)?;
         self.require_peer(peer)?;
         let mut result = Vec::new();
         for agent in self.listed_agents(false)? {
-            if self.peer_allowed(peer, &agent.provider, &agent.session, Permission::Discover)? {
+            if providers
+                .iter()
+                .any(|provider| provider == agent.provider.label())
+                && self.peer_allowed(peer, &agent.provider, &agent.session, Permission::Discover)?
+            {
+                validate_agent(&remote(&agent))?;
                 result.push(remote(&agent));
             }
         }
@@ -281,7 +301,7 @@ impl Db {
         let (destination, reference, hops) = if let Some(parent_id) = parent {
             let previous = self.get(parent_id)?;
             ensure!(
-                previous.recipient == source.name && previous.recipient_session == source.session,
+                previous.recipient_session == source.session,
                 "Only the original recipient session can reply"
             );
             let encoded: String = self
@@ -294,6 +314,10 @@ impl Db {
                 .optional()?
                 .context("Remote replies require a received remote parent")?;
             let previous: Envelope = serde_json::from_str(&encoded)?;
+            ensure!(
+                same_session(&previous.destination, &remote(&source)),
+                "Only the original recipient provider/session can reply"
+            );
             ensure!(
                 previous.origin_peer == peer.peer_id && previous.source.name == agent_name,
                 "Reply destination does not match the parent sender"
@@ -318,6 +342,8 @@ impl Db {
                 .context("Unknown remote session; fetch its permitted directory first")?;
             (serde_json::from_str(&encoded)?, None, 0)
         };
+        validate_agent(&remote(&source))?;
+        validate_agent(&destination)?;
         ensure!(hops <= 8, "Conversation reached the eight-hop limit");
         let envelope = Envelope {
             origin_peer: local_peer.into(),
@@ -542,7 +568,7 @@ impl Db {
             let previous = self.outbound(&parent.id)?.context("Unknown reply parent")?;
             ensure!(
                 previous.destination_peer == authenticated_peer
-                    && previous.destination == envelope.source
+                    && same_session(&previous.destination, &envelope.source)
                     && previous.source == envelope.destination
                     && envelope.hops == previous.hops + 1,
                 "Reply endpoints or hop count do not match the parent"
