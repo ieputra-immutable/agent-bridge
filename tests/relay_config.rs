@@ -126,6 +126,8 @@ fn schema_six_upgrade_preserves_grants_and_identity_and_adds_empty_relay_config(
     db.pause(true).unwrap();
     drop(db);
     let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(include_str!("fixtures/native-metadata-v10.sql"))
+        .unwrap();
     conn.execute_batch("DROP TRIGGER inbound_usage_insert; DROP TRIGGER inbound_usage_delete; DROP TABLE inbound_usage; DROP TRIGGER message_context_insert; DROP TABLE message_context; DROP INDEX messages_monitor_order; DROP TABLE relay_nodes; PRAGMA user_version=6;")
         .unwrap();
     drop(conn);
@@ -146,6 +148,8 @@ fn dual_carrier_adoption_is_atomic_and_migrates_old_routes() {
         drop(db);
     }
     let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(include_str!("fixtures/native-metadata-v10.sql"))
+        .unwrap();
     conn.execute_batch("DROP TRIGGER inbound_usage_insert; DROP TRIGGER inbound_usage_delete; DROP TABLE inbound_usage; DROP TRIGGER message_context_insert; DROP TABLE message_context; DROP INDEX messages_monitor_order; DROP TABLE relay_nodes; CREATE TABLE relay_nodes(peer_id TEXT PRIMARY KEY,address TEXT NOT NULL UNIQUE); PRAGMA user_version=7;").unwrap();
     conn.execute(
         "INSERT INTO relay_nodes VALUES(?,?)",

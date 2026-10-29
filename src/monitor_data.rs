@@ -270,6 +270,9 @@ mod tests {
             .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         db.send(&id, "alice", "bob", "old", &None).unwrap();
+        db.conn
+            .execute_batch(include_str!("../tests/fixtures/native-metadata-v10.sql"))
+            .unwrap();
         db.conn.execute_batch("DROP TRIGGER inbound_usage_insert; DROP TRIGGER inbound_usage_delete; DROP TABLE inbound_usage; DROP TRIGGER message_context_insert; DROP TABLE message_context; DROP INDEX messages_monitor_order; PRAGMA user_version=8;").unwrap();
         drop(db);
         let db = Db::open(&path).unwrap();

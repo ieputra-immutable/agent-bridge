@@ -190,6 +190,8 @@ fn schema_four_upgrade_preserves_data_and_initializes_only_missing_name() {
         .unwrap();
     drop(db);
     let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(include_str!("fixtures/native-metadata-v10.sql"))
+        .unwrap();
     conn.execute_batch("DROP TRIGGER inbound_usage_insert; DROP TRIGGER inbound_usage_delete; DROP TABLE inbound_usage; DROP TRIGGER message_context_insert; DROP TABLE message_context; DROP INDEX messages_monitor_order; DROP TABLE relay_nodes; DROP TABLE pairing_offers; DROP TABLE pairing_joined; ALTER TABLE peers DROP COLUMN machine_name; DELETE FROM settings WHERE key='machine_name'; PRAGMA user_version=4;").unwrap();
     drop(conn);
     let db = Db::open(&path).unwrap();
